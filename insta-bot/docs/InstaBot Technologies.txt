@@ -1,0 +1,179 @@
+Got it 👍
+You want to **extract all technologies/tools** covered in this huge course (like **AWS, MongoDB, etc.**) in a **clean, structured list**.
+
+Below is a **complete technology stack extracted** from your course content 👇
+
+---
+
+## 🐍 Programming Languages
+
+* **Python**
+* **Scala**
+* **Java (basic – Spark setup)**
+* **JavaScript (Node.js)**
+
+---
+
+## 🌐 Web & Scraping Technologies
+
+* **HTML**
+* **CSS**
+* **CSS Selectors**
+* **AJAX**
+* **HTTP / Requests**
+* **Pagination**
+* **Headers / Cookies**
+* **Authentication handling**
+
+---
+
+## 🕷️ Web Scraping Frameworks & Tools
+
+* **Python Requests**
+* **BeautifulSoup (BS4)**
+* **Scrapy**
+* **Scrapy Shell**
+* **Scrapy Spiders**
+* **Scrapy Pipelines**
+* **Selenium**
+* **WebDriver**
+* **Dynamic Web Scraping**
+* **Browser Automation**
+
+---
+
+## 📊 Big Data & Distributed Systems
+
+* **Apache Spark**
+* **Spark RDD**
+* **Spark DataFrames**
+* **Spark SQL**
+* **Spark Streaming**
+* **PySpark**
+* **Databricks**
+* **Hadoop Ecosystem**
+
+---
+
+## ☁️ Cloud & AWS Technologies
+
+* **AWS S3**
+* **AWS RDS (PostgreSQL / MySQL)**
+* **AWS Glue**
+* **AWS Lambda**
+* **AWS DMS (Database Migration Service)**
+* **AWS IAM (implicit – roles & permissions)**
+* **AWS Networking (VPC basics)**
+* **Cloud-based ETL Pipelines**
+
+---
+
+## 🗄️ Databases (SQL & NoSQL)
+
+### SQL
+
+* **PostgreSQL**
+* **MySQL**
+* **RDS (AWS-managed SQL)**
+
+### NoSQL
+
+* **MongoDB**
+* **MongoDB Atlas**
+* **NoSQL Schema Design**
+
+---
+
+## 🔥 MongoDB Ecosystem
+
+* MongoDB CRUD Operations
+* MongoDB Query Operators
+* MongoDB Projection Operators
+* MongoDB Update Operators
+* MongoDB Indexing (basic)
+* MongoDB with **Node.js**
+* MongoDB with **Python**
+* MongoDB with **Django**
+* MongoDB with **Spark**
+
+---
+
+## 🧩 Backend Frameworks
+
+* **Django**
+* **Django REST (basic via Postman)**
+* **Node.js**
+
+---
+
+## 🔁 Data Engineering & ETL
+
+* **ETL Pipelines**
+* **Data Extraction**
+* **Data Transformation**
+* **Data Loading**
+* **Change Data Capture (CDC)**
+* **Batch Processing**
+* **Streaming Processing**
+* **Replication Pipelines**
+
+---
+
+## 🤖 Machine Learning / Recommendation Systems
+
+* **Collaborative Filtering**
+* **ALS Algorithm**
+* **Model Training & Evaluation**
+* **Hyperparameter Tuning**
+* **Recommender Systems**
+
+---
+
+## 🧪 Tools & Utilities
+
+* **Postman**
+* **VS Code**
+* **PyCharm**
+* **PgAdmin**
+* **MySQL Workbench**
+* **CLI / Terminal**
+* **Environment Variables**
+* **Virtual Environments**
+
+---
+
+## 📌 Core CS & Programming Concepts
+
+* Data Structures
+
+  * Lists
+  * Sets
+  * Maps
+  * Stack
+* Functions
+* OOP (Classes, Objects)
+* Control Flow
+* Loops
+* Anonymous Functions
+* Scopes
+
+---
+
+## 🧠 Overall Skill Profile This Course Builds
+
+✅ **Web Scraping Engineer**
+✅ **Data Engineer (Junior–Mid)**
+✅ **Backend Developer**
+✅ **Big Data / Spark Developer**
+✅ **Cloud + ETL Engineer**
+
+---
+
+### If you want next:
+
+* 📄 Resume-ready **skills section**
+* 🎯 What to **skip vs must-do**
+* 🧭 Best **learning order**
+* 💼 Job roles this course prepares you for
+
+Just tell me what you want next 👌
