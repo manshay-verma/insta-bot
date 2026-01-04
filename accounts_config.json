@@ -1,0 +1,13 @@
+{
+  "accounts": [
+    {
+      "username": "manshaydemo1@gmail.com",
+      "is_active": false,
+      "last_used": "2026-01-05T00:11:41.852890",
+      "actions_today": 2,
+      "is_banned": false,
+      "cooldown_until": null
+    }
+  ],
+  "last_saved": "2026-01-05T00:31:45.119848"
+}
