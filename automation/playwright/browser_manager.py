@@ -558,6 +558,140 @@ class InstagramBrowser:
         await self.page.goto(url)
         await asyncio.sleep(random.uniform(2, 5))
 
+    async def navigate_to_explore(self):
+        """
+        Navigate to Instagram's Explore page.
+        
+        Returns:
+            bool: True if navigation successful, False otherwise
+        """
+        try:
+            logger.info("Navigating to Explore page...")
+            await self.page.goto("https://www.instagram.com/explore/")
+            await asyncio.sleep(random.uniform(2, 4))
+            
+            # Dismiss any popups that might appear
+            await self._dismiss_popups()
+            
+            # Verify we're on the explore page
+            current_url = self.page.url
+            if "/explore" in current_url:
+                logger.info("Successfully navigated to Explore page")
+                return True
+            else:
+                logger.warning(f"Navigation may have failed. Current URL: {current_url}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to navigate to Explore page: {e}")
+            return False
+
+    async def search(self, query: str, search_type: str = "all", click_first_result: bool = False) -> bool:
+        """
+        Search for users or hashtags on Instagram.
+        
+        Args:
+            query: The search term (e.g., "travel" or "#travel")
+            search_type: Type of search - "all", "accounts", "tags", "places"
+            click_first_result: If True, clicks on the first search result
+            
+        Returns:
+            bool: True if search was successful, False otherwise
+        """
+        try:
+            logger.info(f"Searching for: {query}")
+            
+            # Navigate to search page or use search icon
+            # Instagram's search is at /explore/search/
+            await self.page.goto("https://www.instagram.com/explore/search/")
+            await asyncio.sleep(random.uniform(1.5, 3))
+            
+            # Look for the search input field
+            search_selectors = [
+                'input[aria-label="Search input"]',
+                'input[placeholder="Search"]',
+                'input[type="text"]',
+                'input[autocapitalize="none"]',
+            ]
+            
+            search_input = None
+            for selector in search_selectors:
+                search_input = await self.page.query_selector(selector)
+                if search_input:
+                    break
+            
+            if not search_input:
+                # Try clicking the search icon first
+                search_icon = await self.page.query_selector('svg[aria-label="Search"]')
+                if search_icon:
+                    await search_icon.click()
+                    await asyncio.sleep(random.uniform(0.5, 1))
+                    # Try to find input again
+                    for selector in search_selectors:
+                        search_input = await self.page.query_selector(selector)
+                        if search_input:
+                            break
+            
+            if not search_input:
+                logger.error("Could not find search input field")
+                await self.page.screenshot(path="search_error.png")
+                return False
+            
+            # Click and type the search query with human-like delays
+            await search_input.click()
+            await asyncio.sleep(random.uniform(0.3, 0.7))
+            
+            # Clear any existing text
+            await search_input.fill("")
+            await asyncio.sleep(random.uniform(0.1, 0.3))
+            
+            # Type the query character by character for human-like behavior
+            for char in query:
+                await self.page.keyboard.type(char)
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+            
+            # Wait for search results to appear
+            await asyncio.sleep(random.uniform(1.5, 3))
+            
+            # Handle search type tabs if specified (Accounts, Tags, Places)
+            if search_type != "all":
+                type_selectors = {
+                    "accounts": 'a:has-text("Accounts")',
+                    "tags": 'a:has-text("Tags")',
+                    "places": 'a:has-text("Places")',
+                }
+                if search_type in type_selectors:
+                    tab = await self.page.query_selector(type_selectors[search_type])
+                    if tab:
+                        await tab.click()
+                        await asyncio.sleep(random.uniform(0.5, 1))
+            
+            # Click on first result if requested
+            if click_first_result:
+                await asyncio.sleep(random.uniform(0.5, 1))
+                
+                # Look for search result items
+                result_selectors = [
+                    'a[href*="/explore/tags/"]',  # Hashtag results
+                    'a[role="link"][tabindex="0"]',  # User results
+                    'div[role="none"] a',  # Generic results
+                ]
+                
+                for selector in result_selectors:
+                    results = await self.page.query_selector_all(selector)
+                    if results and len(results) > 0:
+                        await results[0].click()
+                        logger.info("Clicked on first search result")
+                        await asyncio.sleep(random.uniform(2, 3))
+                        break
+            
+            logger.info(f"Search completed for: {query}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return False
+
     async def scroll_feed(self, count: int = 3):
         """
         Simulate human-like scrolling.
@@ -567,6 +701,108 @@ class InstagramBrowser:
             await self.page.evaluate(f"window.scrollBy(0, {scroll_amount})")
             logger.info(f"Scrolled {scroll_amount}px")
             await asyncio.sleep(random.uniform(1.5, 3.5))
+
+    async def open_post_modal(self, post_index: int = 0) -> bool:
+        """
+        Click on a post to open it in a modal view.
+        
+        Args:
+            post_index: Index of the post to click (0-based, from visible posts)
+            
+        Returns:
+            bool: True if modal opened successfully, False otherwise
+        """
+        try:
+            logger.info(f"Attempting to open post modal (index: {post_index})...")
+            
+            # Selectors for clickable posts on different pages
+            post_selectors = [
+                # Explore page posts
+                'article a[href*="/p/"]',
+                'div[style*="flex"] a[href*="/p/"]',
+                # Feed posts
+                'article a[role="link"][href*="/p/"]',
+                # Profile page posts
+                'a[href*="/p/"][role="link"]',
+                # Generic post links
+                'a[href*="/p/"]',
+            ]
+            
+            posts = []
+            for selector in post_selectors:
+                posts = await self.page.query_selector_all(selector)
+                if posts and len(posts) > post_index:
+                    break
+            
+            if not posts or len(posts) <= post_index:
+                logger.warning(f"Could not find post at index {post_index}. Found {len(posts)} posts.")
+                return False
+            
+            # Click on the target post
+            target_post = posts[post_index]
+            await target_post.click()
+            logger.info(f"Clicked on post {post_index}")
+            
+            await asyncio.sleep(random.uniform(1.5, 3))
+            
+            # Verify modal opened by checking for modal indicators
+            modal_selectors = [
+                'div[role="dialog"]',
+                'article[role="presentation"]',
+                'div[style*="position: fixed"]',
+            ]
+            
+            for selector in modal_selectors:
+                modal = await self.page.query_selector(selector)
+                if modal:
+                    logger.info("Post modal opened successfully")
+                    return True
+            
+            # Check if URL contains /p/ (direct post page instead of modal)
+            if "/p/" in self.page.url:
+                logger.info("Navigated to post page (not modal, but post is open)")
+                return True
+            
+            logger.warning("Could not verify modal opened")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to open post modal: {e}")
+            return False
+
+    async def close_post_modal(self) -> bool:
+        """
+        Close the currently open post modal.
+        
+        Returns:
+            bool: True if modal closed successfully, False otherwise
+        """
+        try:
+            # Look for close buttons
+            close_selectors = [
+                'svg[aria-label="Close"]',
+                'button[aria-label="Close"]',
+                'div[role="button"] svg',
+            ]
+            
+            for selector in close_selectors:
+                close_btn = await self.page.query_selector(selector)
+                if close_btn:
+                    await close_btn.click()
+                    logger.info("Closed post modal")
+                    await asyncio.sleep(random.uniform(0.5, 1))
+                    return True
+            
+            # Try pressing Escape key
+            await self.page.keyboard.press("Escape")
+            logger.info("Pressed Escape to close modal")
+            await asyncio.sleep(random.uniform(0.5, 1))
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to close modal: {e}")
+            return False
+
 
     async def close(self):
         """
