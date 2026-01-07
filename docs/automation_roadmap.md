@@ -21,9 +21,9 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 |---|------|----------|--------|
 | 6 | Visit user profiles | High | ✅ Done |
 | 7 | Scroll feed (human-like) | High | ✅ Done |
-| 8 | Navigate to Explore page | Medium | ❌ To Do |
-| 9 | Search for users/hashtags | Medium | ❌ To Do |
-| 10 | Open post modals | Medium | ❌ To Do |
+| 8 | Navigate to Explore page | Medium | ✅ Done |
+| 9 | Search for users/hashtags | Medium | ✅ Done |
+| 10 | Open post modals | Medium | ✅ Done |
 
 ### Data Extraction
 | # | Task | Priority | Status |
