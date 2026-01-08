@@ -28,8 +28,8 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 ### Data Extraction
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 11 | Extract profile info (bio, stats) | High | ❌ To Do |
-| 12 | Extract post data (caption, likes) | High | ❌ To Do |
+| 11 | Extract profile info (bio, stats) | High | ✅ Done |
+| 12 | Extract post data (caption, likes) | High | ✅ Done |
 | 13 | Extract hashtags from posts | Medium | ❌ To Do |
 | 14 | Extract story data | Low | ❌ To Do |
 | 15 | Screenshot capture | Low | ❌ To Do |
@@ -140,12 +140,12 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 
 | Module | Done | To Do | Total |
 |--------|------|-------|-------|
-| Playwright | 4 | 18 | 22 |
+| Playwright | 6 | 16 | 22 |
 | Downloader | 4 | 8 | 12 |
 | Safety | 0 | 12 | 12 |
 | Scrapy | 0 | 8 | 8 |
 | Selenium | 0 | 6 | 6 |
-| **TOTAL** | **8** | **52** | **60** |
+| **TOTAL** | **10** | **50** | **60** |
 
 ---
 

@@ -558,6 +558,251 @@ class InstagramBrowser:
         await self.page.goto(url)
         await asyncio.sleep(random.uniform(2, 5))
 
+    async def extract_profile_info(self, target_username: str = None) -> Dict:
+        """
+        Extract profile information from the current profile page or a specified user.
+        
+        Args:
+            target_username: Optional username to visit. If None, extracts from current page.
+            
+        Returns:
+            dict: Profile information including:
+                - username: Profile username
+                - full_name: Display name
+                - bio: Profile biography/description
+                - posts_count: Number of posts
+                - followers_count: Number of followers
+                - following_count: Number of accounts following
+                - profile_pic_url: URL of profile picture
+                - is_verified: Whether account has blue checkmark
+                - is_private: Whether account is private
+                - external_url: External link in bio (if any)
+        """
+        try:
+            # Navigate to profile if username provided
+            if target_username:
+                await self.visit_profile(target_username)
+            
+            logger.info("Extracting profile information...")
+            
+            profile_data = {
+                'username': None,
+                'full_name': None,
+                'bio': None,
+                'posts_count': None,
+                'followers_count': None,
+                'following_count': None,
+                'profile_pic_url': None,
+                'is_verified': False,
+                'is_private': False,
+                'external_url': None,
+            }
+            
+            # Extract username from URL or page
+            current_url = self.page.url
+            if 'instagram.com/' in current_url:
+                url_username = current_url.split('instagram.com/')[-1].strip('/').split('/')[0]
+                if url_username and url_username not in ['p', 'explore', 'accounts', 'direct']:
+                    profile_data['username'] = url_username
+            
+            # Use JavaScript to extract all profile data at once for reliability
+            extracted_data = await self.page.evaluate('''
+                () => {
+                    const result = {
+                        full_name: null,
+                        bio: null,
+                        posts: null,
+                        followers: null,
+                        followers_exact: null,
+                        following: null
+                    };
+                    
+                    // Get all span[dir="auto"] elements - they contain name, stats, and bio
+                    const dirAutoSpans = document.querySelectorAll('header section span[dir="auto"]');
+                    
+                    // 1. Full Name - First span[dir="auto"] that's not a stat
+                    if (dirAutoSpans.length > 0) {
+                        const firstText = dirAutoSpans[0].textContent.trim();
+                        // Make sure it's not stats text
+                        if (!firstText.includes('post') && !firstText.includes('follower') && !firstText.includes('following')) {
+                            result.full_name = firstText;
+                        }
+                    }
+                    
+                    // 2. Extract Stats - try header ul li first (works on some views)
+                    const statsLIs = document.querySelectorAll('header ul li');
+                    if (statsLIs.length >= 3) {
+                        // Posts (first li)
+                        const postsText = statsLIs[0].textContent;
+                        const postsMatch = postsText.match(/([0-9][0-9,\.]*[KMB]?)/i);
+                        if (postsMatch) result.posts = postsMatch[1];
+                        
+                        // Followers (second li)
+                        const followersSpan = statsLIs[1].querySelector('span[title]');
+                        if (followersSpan) {
+                            result.followers_exact = followersSpan.getAttribute('title');
+                            result.followers = followersSpan.textContent.trim();
+                        } else {
+                            const followersText = statsLIs[1].textContent;
+                            const followersMatch = followersText.match(/([0-9][0-9,\.]*[KMB]?)/i);
+                            if (followersMatch) result.followers = followersMatch[1];
+                        }
+                        
+                        // Following (third li)
+                        const followingText = statsLIs[2].textContent;
+                        const followingMatch = followingText.match(/([0-9][0-9,\.]*[KMB]?)/i);
+                        if (followingMatch) result.following = followingMatch[1];
+                    }
+                    
+                    // FALLBACK: If header ul li didn't work, extract stats from span[dir="auto"] elements
+                    // On some views, stats appear as: "8,296 posts", "698M followers", "300 following"
+                    if (!result.posts && !result.followers && !result.following) {
+                        for (let i = 0; i < dirAutoSpans.length; i++) {
+                            const text = dirAutoSpans[i].textContent.trim().toLowerCase();
+                            const numMatch = text.match(/([0-9][0-9,\.]*[KMB]?)/i);
+                            
+                            if (numMatch) {
+                                if (text.includes('post') && !result.posts) {
+                                    result.posts = numMatch[1];
+                                } else if (text.includes('follower') && !text.includes('following') && !result.followers) {
+                                    result.followers = numMatch[1];
+                                } else if (text.includes('following') && !result.following) {
+                                    result.following = numMatch[1];
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 3. Extract Bio - span after stats, look for text that's not stats
+                    // Start from index 4 (after name + 3 stats)
+                    for (let i = 4; i < dirAutoSpans.length; i++) {
+                        const text = dirAutoSpans[i].textContent.trim();
+                        // Skip if it looks like stats or is empty
+                        if (text && text.length > 3 && 
+                            !text.includes(' posts') && 
+                            !text.includes(' followers') && 
+                            !text.includes(' following') &&
+                            !/^[0-9][0-9,\.]*[KMB]?$/i.test(text)) {
+                            result.bio = text;
+                            break;
+                        }
+                    }
+                    
+                    // Fallback: look for bio in h1 element
+                    if (!result.bio) {
+                        const h1El = document.querySelector('header section h1');
+                        if (h1El) {
+                            result.bio = h1El.textContent.trim();
+                        }
+                    }
+                    
+                    return result;
+                }
+            ''')
+            
+            if extracted_data:
+                profile_data['full_name'] = extracted_data.get('full_name')
+                profile_data['bio'] = extracted_data.get('bio')
+                
+                # Use exact follower count from title attribute if available
+                followers_exact = extracted_data.get('followers_exact')
+                if followers_exact:
+                    profile_data['followers_count'] = self._parse_stat_number(followers_exact)
+                else:
+                    profile_data['followers_count'] = self._parse_stat_number(extracted_data.get('followers'))
+                
+                profile_data['posts_count'] = self._parse_stat_number(extracted_data.get('posts'))
+                profile_data['following_count'] = self._parse_stat_number(extracted_data.get('following'))
+            
+            # Extract profile picture URL
+            pic_selectors = [
+                'header img[alt*="profile"]',
+                'header img[draggable="false"]',
+                'header section img',
+                'img[alt*="\'s profile picture"]',
+            ]
+            for selector in pic_selectors:
+                try:
+                    pic_el = await self.page.query_selector(selector)
+                    if pic_el:
+                        pic_url = await pic_el.get_attribute('src')
+                        if pic_url and 'instagram' in pic_url:
+                            profile_data['profile_pic_url'] = pic_url
+                            break
+                except:
+                    continue
+            
+            # Check for verified badge
+            verified_selectors = [
+                'svg[aria-label="Verified"]',
+                'span[title="Verified"]',
+                'svg[aria-label*="verified"]',
+            ]
+            for selector in verified_selectors:
+                try:
+                    verified_el = await self.page.query_selector(selector)
+                    if verified_el:
+                        profile_data['is_verified'] = True
+                        break
+                except:
+                    continue
+            
+            # Check if account is private
+            private_indicators = await self.page.evaluate('''
+                () => {
+                    const pageText = document.body.innerText.toLowerCase();
+                    return pageText.includes('this account is private') || 
+                           pageText.includes('private account');
+                }
+            ''')
+            profile_data['is_private'] = private_indicators
+            
+            # Extract external URL
+            try:
+                link_el = await self.page.query_selector('header a[href*="l.instagram.com"], header a[rel="me nofollow noopener noreferrer"]')
+
+                if link_el:
+                    profile_data['external_url'] = await link_el.get_attribute('href')
+            except:
+                pass
+            
+            logger.info(f"Profile extraction completed for: {profile_data.get('username', 'unknown')}")
+            return profile_data
+            
+        except Exception as e:
+            logger.error(f"Failed to extract profile info: {e}")
+            return {'error': str(e)}
+    
+    def _parse_stat_number(self, value: str) -> Optional[int]:
+        """
+        Parse Instagram stat numbers (e.g., "1.5M", "10K", "1,234") to integers.
+        
+        Args:
+            value: String representation of the number
+            
+        Returns:
+            int: Parsed number, or None if parsing fails
+        """
+        if not value:
+            return None
+        
+        try:
+            # Remove commas
+            value = value.replace(',', '').strip().upper()
+            
+            # Handle K, M, B suffixes
+            multipliers = {'K': 1000, 'M': 1000000, 'B': 1000000000}
+            
+            for suffix, multiplier in multipliers.items():
+                if value.endswith(suffix):
+                    num = float(value[:-1])
+                    return int(num * multiplier)
+            
+            # Try to parse as regular number
+            return int(float(value))
+        except (ValueError, TypeError):
+            return None
+
     async def navigate_to_explore(self):
         """
         Navigate to Instagram's Explore page.
@@ -802,6 +1047,228 @@ class InstagramBrowser:
         except Exception as e:
             logger.error(f"Failed to close modal: {e}")
             return False
+
+    async def extract_post_data(self, post_url: str = None) -> Dict:
+        """
+        Extract data from an Instagram post (modal or direct post page).
+        
+        Args:
+            post_url: Optional URL of the post. If None, extracts from current page/modal.
+            
+        Returns:
+            dict: Post information including:
+                - post_id: Unique post identifier from URL
+                - caption: Post caption/description text
+                - likes_count: Number of likes
+                - comments_count: Number of comments
+                - posted_at: ISO datetime string when posted
+                - posted_ago: Human-readable time (e.g., "6 days ago")
+                - poster_username: Username of the account that posted
+                - media_type: "image", "video", or "carousel"
+                - media_urls: List of media URLs (images/videos)
+                - is_liked: Whether current user has liked the post (if logged in)
+        """
+        try:
+            # Navigate to post if URL provided
+            if post_url:
+                logger.info(f"Navigating to post: {post_url}")
+                await self.page.goto(post_url)
+                await asyncio.sleep(random.uniform(2, 4))
+            
+            logger.info("Extracting post data...")
+            
+            post_data = {
+                'post_id': None,
+                'caption': None,
+                'likes_count': None,
+                'comments_count': None,
+                'posted_at': None,
+                'posted_ago': None,
+                'poster_username': None,
+                'media_type': None,
+                'media_urls': [],
+                'is_liked': False,
+            }
+            
+            # Extract post ID from URL
+            current_url = self.page.url
+            if '/p/' in current_url:
+                parts = current_url.split('/p/')
+                if len(parts) > 1:
+                    post_data['post_id'] = parts[1].split('/')[0]
+            
+            # Use JavaScript to extract all post data at once
+            extracted_data = await self.page.evaluate('''
+                () => {
+                    const result = {
+                        caption: null,
+                        likes: null,
+                        comments: null,
+                        posted_at: null,
+                        posted_ago: null,
+                        poster_username: null,
+                        media_urls: [],
+                        is_video: false,
+                        is_carousel: false,
+                        is_liked: false
+                    };
+                    
+                    // 1. Extract Caption - look in main/article spans with dir="auto"
+                    const captionSpans = document.querySelectorAll('main span[dir="auto"], article span[dir="auto"], div[role="dialog"] span[dir="auto"]');
+                    for (let i = 0; i < captionSpans.length; i++) {
+                        const text = captionSpans[i].textContent.trim();
+                        // Caption is usually longer than a username and not a timestamp
+                        if (text.length > 20 && 
+                            !text.includes('Log in') && 
+                            !text.includes('Sign up') &&
+                            !text.match(/^[0-9]+ (days?|hours?|minutes?|seconds?|weeks?) ago$/)) {
+                            result.caption = text;
+                            break;
+                        }
+                    }
+                    
+                    // Fallback: Look for h1 element (sometimes contains caption)
+                    if (!result.caption) {
+                        const h1 = document.querySelector('main h1, article h1');
+                        if (h1 && h1.textContent.length > 10) {
+                            result.caption = h1.textContent.trim();
+                        }
+                    }
+                    
+                    // 2. Extract Poster Username
+                    // Usually the first link in the post header area
+                    const allLinks = document.querySelectorAll('a[href^="/"][role="link"]');
+                    for (const link of allLinks) {
+                        const href = link.getAttribute('href');
+                        // Username links are like /username/ but not /p/, /explore/, etc.
+                        if (href && href.match(/^\/[a-zA-Z0-9._]+\/?$/) && 
+                            !href.includes('/p/') && 
+                            !href.includes('/explore/')) {
+                            result.poster_username = href.replace(/\//g, '');
+                            break;
+                        }
+                    }
+                    
+                    // 3. Extract Date/Time from <time> element
+                    const timeEls = document.querySelectorAll('time');
+                    for (const timeEl of timeEls) {
+                        const datetime = timeEl.getAttribute('datetime');
+                        if (datetime) {
+                            result.posted_at = datetime;
+                            result.posted_ago = timeEl.textContent.trim();
+                            break;
+                        }
+                    }
+                    
+                    // 4. Extract Likes and Comments Count
+                    // Instagram shows them in action sections as: "Like378.2KComment6.1KShareSave"
+                    // Find numeric spans in sections - first is likes, second is comments
+                    const sectionSpans = document.querySelectorAll('section span');
+                    const numericValues = [];
+                    for (const span of sectionSpans) {
+                        const text = span.textContent.trim();
+                        if (/^[0-9,\.]+[KMB]?$/.test(text)) {
+                            numericValues.push(text);
+                        }
+                    }
+                    
+                    // Usually first numeric is likes, second is comments
+                    if (numericValues.length >= 1) {
+                        result.likes = numericValues[0];
+                    }
+                    if (numericValues.length >= 2) {
+                        result.comments = numericValues[1];
+                    }
+                    
+                    // Fallback: Look for traditional patterns like "378.1K likes"
+                    const bodyText = document.body.innerText;
+                    if (!result.likes) {
+                        const likesMatch = bodyText.match(/([0-9,\.]+[KMB]?)\s*likes?/i);
+                        if (likesMatch) {
+                            result.likes = likesMatch[1];
+                        }
+                    }
+                    
+                    // Fallback for comments: "6.1K comments" or "View all XX comments"
+                    if (!result.comments) {
+                        const commentsMatch = bodyText.match(/([0-9,\.]+[KMB]?)\s*comments?/i);
+                        if (commentsMatch) {
+                            result.comments = commentsMatch[1];
+                        } else {
+                            const viewAllMatch = bodyText.match(/View all\s+([0-9,\.]+[KMB]?)\s*comments?/i);
+                            if (viewAllMatch) {
+                                result.comments = viewAllMatch[1];
+                            }
+                        }
+                    }
+                    
+                    // 6. Check Media Type and Extract URLs
+                    const videos = document.querySelectorAll('video');
+                    const images = document.querySelectorAll('main img, article img, div[role="dialog"] img');
+                    
+                    if (videos.length > 0) {
+                        result.is_video = true;
+                        videos.forEach(v => {
+                            if (v.src && v.src.startsWith('http')) {
+                                result.media_urls.push(v.src);
+                            }
+                        });
+                    }
+                    
+                    // Get image URLs (filter out profile pics and icons)
+                    images.forEach(img => {
+                        const src = img.src;
+                        const alt = img.alt || '';
+                        // Skip profile pictures and small icons
+                        if (src && 
+                            src.startsWith('http') && 
+                            !src.includes('s150x150') &&
+                            !alt.includes("profile picture") &&
+                            img.width > 100) {
+                            result.media_urls.push(src);
+                        }
+                    });
+                    
+                    // Check for carousel indicators
+                    const carouselBtn = document.querySelector('button[aria-label*="Next"], button[aria-label*="Go to slide"]');
+                    if (carouselBtn) {
+                        result.is_carousel = true;
+                    }
+                    
+                    // 7. Check if post is liked
+                    const likeButton = document.querySelector('svg[aria-label="Unlike"], svg[aria-label="Liked"]');
+                    if (likeButton) {
+                        result.is_liked = true;
+                    }
+                    
+                    return result;
+                }
+            ''')
+            
+            if extracted_data:
+                post_data['caption'] = extracted_data.get('caption')
+                post_data['poster_username'] = extracted_data.get('poster_username')
+                post_data['posted_at'] = extracted_data.get('posted_at')
+                post_data['posted_ago'] = extracted_data.get('posted_ago')
+                post_data['likes_count'] = self._parse_stat_number(extracted_data.get('likes'))
+                post_data['comments_count'] = self._parse_stat_number(extracted_data.get('comments'))
+                post_data['media_urls'] = extracted_data.get('media_urls', [])
+                post_data['is_liked'] = extracted_data.get('is_liked', False)
+                
+                # Determine media type
+                if extracted_data.get('is_carousel'):
+                    post_data['media_type'] = 'carousel'
+                elif extracted_data.get('is_video'):
+                    post_data['media_type'] = 'video'
+                else:
+                    post_data['media_type'] = 'image'
+            
+            logger.info(f"Post extraction completed for: {post_data.get('post_id', 'unknown')}")
+            return post_data
+            
+        except Exception as e:
+            logger.error(f"Failed to extract post data: {e}")
+            return {'error': str(e)}
 
 
     async def close(self):
