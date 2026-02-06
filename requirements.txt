@@ -24,3 +24,8 @@ boto3==1.33.0
 # Utilities
 python-dotenv==1.0.0
 pydantic==2.5.2
+pytz==2024.1
+
+# Selenium Extras
+webdriver-manager==4.0.1
+undetected-chromedriver==3.5.4
