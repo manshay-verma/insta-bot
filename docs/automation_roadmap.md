@@ -5,7 +5,7 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 
 ---
 
-## 1. 🎭 Playwright (Browser Automation) - 15 Tasks
+## 1. 🎭 Playwright (Browser Automation) - 22 Tasks
 
 ### Authentication & Session
 | # | Task | Priority | Status |
@@ -30,24 +30,24 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 |---|------|----------|--------|
 | 11 | Extract profile info (bio, stats) | High | ✅ Done |
 | 12 | Extract post data (caption, likes) | High | ✅ Done |
-| 13 | Extract hashtags from posts | Medium | ❌ To Do |
-| 14 | Extract story data | Low | ❌ To Do |
-| 15 | Screenshot capture | Low | ❌ To Do |
+| 13 | Extract hashtags from posts | Medium | ✅ Done |
+| 14 | Extract story data | Low | ✅ Done |
+| 15 | Screenshot capture | Low | ✅ Done |
 
 ### Actions
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 16 | Like posts | High | ❌ To Do |
-| 17 | Unlike posts | Low | ❌ To Do |
-| 18 | Follow users | High | ❌ To Do |
-| 19 | Unfollow users | Medium | ❌ To Do |
-| 20 | View stories | Medium | ❌ To Do |
-| 21 | Save posts | Low | ❌ To Do |
-| 22 | Comment on posts | Low | ❌ To Do |
+| 16 | Like posts | High | ✅ Done |
+| 17 | Unlike posts | Low | ✅ Done |
+| 18 | Follow users | High | ✅ Done |
+| 19 | Unfollow users | Medium | ✅ Done |
+| 20 | View stories | Medium | ✅ Done |
+| 21 | Save posts | Low | ✅ Done |
+| 22 | Comment on posts | Low | ✅ Done |
 
 ---
 
-## 2. 📥 Downloader - 10 Tasks
+## 2. 📥 Downloader - 12 Tasks
 
 ### Core Downloads
 | # | Task | Priority | Status |
@@ -140,12 +140,12 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 
 | Module | Done | To Do | Total |
 |--------|------|-------|-------|
-| Playwright | 6 | 16 | 22 |
+| Playwright | 21 | 1 | 22 |
 | Downloader | 4 | 8 | 12 |
 | Safety | 0 | 12 | 12 |
 | Scrapy | 0 | 8 | 8 |
 | Selenium | 0 | 6 | 6 |
-| **TOTAL** | **10** | **50** | **60** |
+| **TOTAL** | **25** | **35** | **60** |
 
 ---
 
