@@ -140,12 +140,12 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 
 | Module | Done | To Do | Total |
 |--------|------|-------|-------|
-| Playwright | 21 | 1 | 22 |
+| Playwright | 22 | 0 | 22 |
 | Downloader | 4 | 8 | 12 |
 | Safety | 0 | 12 | 12 |
 | Scrapy | 0 | 8 | 8 |
 | Selenium | 0 | 6 | 6 |
-| **TOTAL** | **25** | **35** | **60** |
+| **TOTAL** | **26** | **34** | **60** |
 
 ---
 
