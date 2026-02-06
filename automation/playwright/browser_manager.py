@@ -16,10 +16,11 @@ class InstagramBrowser:
     Focuses on anti-detection and human-like behavior.
     """
 
-    def __init__(self, headless: bool = True, proxy: Optional[Dict] = None, browser_type: str = "chromium"):
+    def __init__(self, headless: bool = True, proxy: Optional[Dict] = None, browser_type: str = "chromium", channel: Optional[str] = None):
         self.headless = headless
         self.proxy = proxy
         self.browser_type = browser_type
+        self.channel = channel
         self.playwright = None
         self.browser = None
         self.context = None
@@ -89,6 +90,8 @@ class InstagramBrowser:
                 
                 if name == "chromium":
                     launch_options["args"] = launch_args
+                    if self.channel:
+                        launch_options["channel"] = self.channel
 
                 self.browser = await launcher.launch(**launch_options)
                 logger.info(f"Successfully launched {name}.")
@@ -1296,6 +1299,62 @@ class InstagramBrowser:
                 else:
                     post_data['media_type'] = 'image'
             
+            # Additional logic for Carousels: Navigate to get all images/videos
+            if post_data.get('media_type') == 'carousel':
+                logger.info("Carousel detected. Navigating to extract all media URLs...")
+                # Use a list to preserve order, but check for duplicates
+                ordered_urls = []
+                for url in post_data['media_urls']:
+                    if url not in ordered_urls:
+                        ordered_urls.append(url)
+                
+                # Limit to 10 items (maximum on Instagram)
+                for _ in range(10):
+                    # Look for the "Next" button in the carousel
+                    next_selectors = [
+                        'button[aria-label="Next"]',
+                        'div[role="dialog"] button[aria-label="Next"]',
+                        'article button[aria-label="Next"]'
+                    ]
+                    
+                    next_btn = None
+                    for sel in next_selectors:
+                        next_btn = await self.page.query_selector(sel)
+                        if next_btn: break
+                        
+                    if not next_btn:
+                        break
+                        
+                    await next_btn.click()
+                    await asyncio.sleep(random.uniform(0.8, 1.5)) # Increased wait for load
+                    
+                    # Extract new visible URLs
+                    new_urls = await self.page.evaluate('''
+                        () => {
+                            const urls = [];
+                            // Prefer videos if present
+                            const videos = document.querySelectorAll('video');
+                            videos.forEach(v => { 
+                                if (v.src && v.src.startsWith('http')) urls.push(v.src); 
+                            });
+                            
+                            const images = document.querySelectorAll('main img, article img, div[role="dialog"] img');
+                            images.forEach(img => {
+                                if (img.src && img.src.startsWith('http') && !img.src.includes('s150x150') && img.width > 100) {
+                                    urls.push(img.src);
+                                }
+                            });
+                            return urls;
+                        }
+                    ''')
+                    
+                    for url in new_urls:
+                        if url not in ordered_urls:
+                            ordered_urls.append(url)
+                
+                post_data['media_urls'] = ordered_urls
+                logger.info(f"Extracted {len(post_data['media_urls'])} total media URLs from carousel")
+
             logger.info(f"Post extraction completed for: {post_data.get('post_id', 'unknown')}")
             return post_data
             

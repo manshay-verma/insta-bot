@@ -26,16 +26,21 @@ class AccountInfo:
     is_banned: bool = False
     cooldown_until: Optional[datetime] = None
     proxy: Optional[Dict] = None
-    
-    def to_dict(self) -> Dict:
-        return {
+
+    def to_dict(self, include_credentials: bool = True) -> Dict:
+        data = {
             'username': self.username,
             'is_active': self.is_active,
             'last_used': self.last_used.isoformat() if self.last_used else None,
             'actions_today': self.actions_today,
             'is_banned': self.is_banned,
             'cooldown_until': self.cooldown_until.isoformat() if self.cooldown_until else None,
+            'cookie_path': self.cookie_path,
+            'proxy': self.proxy
         }
+        if include_credentials:
+            data['password'] = self.password
+        return data
 
 
 class MultiAccountManager:
@@ -50,9 +55,11 @@ class MultiAccountManager:
     - Automatic cooldown management
     """
     
-    def __init__(self, config_path: str = "accounts_config.json", headless: bool = True):
+    def __init__(self, config_path: str = "accounts_config.json", headless: bool = True, browser_type: str = "chromium", channel: str = "chrome"):
         self.config_path = config_path
         self.headless = headless
+        self.browser_type = browser_type
+        self.channel = channel
         self.accounts: List[AccountInfo] = []
         self.current_account: Optional[AccountInfo] = None
         self.browser: Optional[InstagramBrowser] = None
@@ -61,6 +68,9 @@ class MultiAccountManager:
         self.max_actions_per_account = 50  # Per day
         self.cooldown_minutes = 30  # Between account switches
         self.rotation_strategy = "round_robin"  # or "least_used" or "random"
+        
+        # Auto-load if config exists
+        self.load_state()
         
     def add_account(self, username: str, password: str, cookie_path: Optional[str] = None, 
                     proxy: Optional[Dict] = None):
@@ -75,6 +85,7 @@ class MultiAccountManager:
                 acc.password = password
                 acc.cookie_path = cookie_path
                 acc.proxy = proxy
+                self.save_state()
                 return
         
         account = AccountInfo(
@@ -85,21 +96,17 @@ class MultiAccountManager:
         )
         self.accounts.append(account)
         logger.info(f"Added account: {username}")
+        self.save_state()
         
     def remove_account(self, username: str):
         """Remove an account from the manager."""
         self.accounts = [acc for acc in self.accounts if acc.username != username]
         logger.info(f"Removed account: {username}")
+        self.save_state()
         
     def load_accounts(self, accounts_data: List[Dict]):
         """
         Load accounts from a list of dictionaries.
-        
-        Example:
-            manager.load_accounts([
-                {"username": "user1", "password": "pass1"},
-                {"username": "user2", "password": "pass2", "proxy": {"server": "http://proxy:8080"}}
-            ])
         """
         for acc_data in accounts_data:
             self.add_account(
@@ -110,34 +117,44 @@ class MultiAccountManager:
             )
             
     def save_state(self):
-        """Save current account states to config file."""
+        """Save current account states to config file including credentials."""
         state = {
-            'accounts': [acc.to_dict() for acc in self.accounts],
+            'accounts': [acc.to_dict(include_credentials=True) for acc in self.accounts],
             'last_saved': datetime.now().isoformat()
         }
         with open(self.config_path, 'w') as f:
             json.dump(state, f, indent=2)
-        logger.info(f"Saved state to {self.config_path}")
+        logger.info(f"Saved all accounts and state to {self.config_path}")
         
     def load_state(self):
-        """Load account states from config file."""
+        """Load account states and credentials from config file."""
         if not os.path.exists(self.config_path):
             return
             
-        with open(self.config_path, 'r') as f:
-            state = json.load(f)
-            
-        for saved_acc in state.get('accounts', []):
-            for acc in self.accounts:
-                if acc.username == saved_acc['username']:
-                    acc.actions_today = saved_acc.get('actions_today', 0)
-                    acc.is_banned = saved_acc.get('is_banned', False)
-                    if saved_acc.get('cooldown_until'):
-                        acc.cooldown_until = datetime.fromisoformat(saved_acc['cooldown_until'])
-                    if saved_acc.get('last_used'):
-                        acc.last_used = datetime.fromisoformat(saved_acc['last_used'])
-                        
-        logger.info("Loaded state from config")
+        try:
+            with open(self.config_path, 'r') as f:
+                state = json.load(f)
+                
+            self.accounts = []
+            for saved_acc in state.get('accounts', []):
+                acc = AccountInfo(
+                    username=saved_acc['username'],
+                    password=saved_acc.get('password', ''),
+                    cookie_path=saved_acc.get('cookie_path', f"cookies_{saved_acc['username']}.json"),
+                    proxy=saved_acc.get('proxy'),
+                    actions_today=saved_acc.get('actions_today', 0),
+                    is_banned=saved_acc.get('is_banned', False)
+                )
+                if saved_acc.get('cooldown_until'):
+                    acc.cooldown_until = datetime.fromisoformat(saved_acc['cooldown_until'])
+                if saved_acc.get('last_used'):
+                    acc.last_used = datetime.fromisoformat(saved_acc['last_used'])
+                
+                self.accounts.append(acc)
+                            
+            logger.info(f"Loaded {len(self.accounts)} accounts from config")
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
         
     def get_available_accounts(self) -> List[AccountInfo]:
         """Get list of accounts that are available for use (not banned, not on cooldown)."""
@@ -208,10 +225,12 @@ class MultiAccountManager:
             logger.error("No account available for switching")
             return False
             
-        # Create new browser with account's proxy
+        # Create new browser with account's proxy and global settings
         self.browser = InstagramBrowser(
             headless=self.headless,
-            proxy=account.proxy
+            proxy=account.proxy,
+            browser_type=self.browser_type,
+            channel=self.channel
         )
         await self.browser.start()
         
