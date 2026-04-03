@@ -17,6 +17,8 @@ from .base_adapter import BaseAdapter, AdapterType, TaskType, TaskResult
 automation_path = Path(__file__).parent.parent.parent / "automation"
 sys.path.insert(0, str(automation_path))
 
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +27,7 @@ class PlaywrightAdapter(BaseAdapter):
     Adapter for Playwright browser automation.
     
     Wraps InstagramBrowser from automation/playwright/browser_manager.py
+    Wraps InstagramBrowser from automation/playwright_engine/browser_manager.py
     
     Supported Tasks:
     - LOGIN, SCRAPE_PROFILE, SCRAPE_POSTS
@@ -50,7 +53,7 @@ class PlaywrightAdapter(BaseAdapter):
     async def initialize(self) -> bool:
         """Initialize Playwright browser."""
         try:
-            from playwright.browser_manager import InstagramBrowser
+            from playwright_engine.browser_manager import InstagramBrowser
             
             # Fetch account for proxy config
             await self.fetch_account()
@@ -70,8 +73,9 @@ class PlaywrightAdapter(BaseAdapter):
             logger.error(f"Failed to import Playwright: {e}")
             return False
         except Exception as e:
-            logger.error(f"Failed to initialize Playwright: {e}")
+            logger.exception(f"Failed to initialize Playwright: {e}")
             return False
+
     
     async def cleanup(self):
         """Close browser."""

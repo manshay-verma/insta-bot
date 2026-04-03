@@ -51,8 +51,8 @@ class SeleniumAdapter(BaseAdapter):
     async def initialize(self) -> bool:
         """Initialize Selenium WebDriver."""
         try:
-            from selenium.driver_manager import DriverManager, BrowserType
-            from selenium.navigation import Navigation
+            from selenium_engine.driver_manager import DriverManager, BrowserType
+            from selenium_engine.navigation import Navigation
             
             # Fetch account for proxy config
             await self.fetch_account()
@@ -138,7 +138,8 @@ class SeleniumAdapter(BaseAdapter):
         username = self._account_data.get("username")
         
         try:
-            from selenium.auth.login import SeleniumLogin
+            from selenium_engine.auth.login import SeleniumLogin
+
             
             login_handler = SeleniumLogin(self.driver)
             success = login_handler.login(username, "")  # Use cookies
@@ -161,7 +162,8 @@ class SeleniumAdapter(BaseAdapter):
         errors = []
         
         try:
-            from selenium.scraper.profile_scraper import ProfileScraper
+            from selenium_engine.scraper.profile_scraper import ProfileScraper
+
             scraper = ProfileScraper(self.driver)
             
             for username in targets:
