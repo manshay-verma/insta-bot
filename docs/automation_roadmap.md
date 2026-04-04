@@ -14,7 +14,7 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 | 2 | Cookie persistence (save/load) | High | ✅ Done |
 | 3 | Session validation check | Medium | ✅ Done |
 | 4 | Multi-account session rotation | Low | ✅ Done |
-| 5 | Handle 2FA/verification prompts | Medium | ❌ To Do |
+| 5 | Handle 2FA/verification prompts | Medium | ✅ Done |
 
 ### Navigation & Browsing
 | # | Task | Priority | Status |
@@ -54,24 +54,24 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 |---|------|----------|--------|
 | 1 | Download single image | High | ✅ Done |
 | 2 | Download single video | High | ✅ Done |
-| 3 | Download carousel (multi-image) | Medium | ❌ To Do |
-| 4 | Download reels with audio | Medium | ❌ To Do |
-| 5 | Download stories | Medium | ❌ To Do |
-| 6 | Download profile pictures (HD) | Low | ❌ To Do |
+| 3 | Download carousel (multi-image) | Medium | ✅ Done |
+| 4 | Download reels with audio | Medium | ✅ Done |
+| 5 | Download stories | Medium | ✅ Done |
+| 6 | Download profile pictures (HD) | Low | ✅ Done |
 
 ### Advanced Features
 | # | Task | Priority | Status |
 |---|------|----------|--------|
 | 7 | Bulk parallel downloads | High | ✅ Done |
-| 8 | Resume interrupted downloads | Medium | ❌ To Do |
-| 9 | Progress tracking/callbacks | Low | ❌ To Do |
+| 8 | Resume interrupted downloads | Medium | ✅ Done |
+| 9 | Progress tracking/callbacks | Low | ✅ Done |
 | 10 | S3 upload integration | Medium | ✅ Done |
 
 ### Integration
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 11 | Connect with Playwright scraper | High | ❌ To Do |
-| 12 | Auto-organize folder structure | Medium | ❌ To Do |
+| 11 | Connect with Playwright scraper | High | ✅ Done |
+| 12 | Auto-organize folder structure | Medium | ✅ Done |
 
 ---
 
@@ -80,26 +80,26 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 ### Rate Limiting
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Actions per hour limit | High | ❌ To Do |
-| 2 | Actions per day limit | High | ❌ To Do |
-| 3 | Redis-backed counters | Medium | ❌ To Do |
-| 4 | Per-action type limits | Medium | ❌ To Do |
+| 1 | Actions per hour limit | High | ✅ Done |
+| 2 | Actions per day limit | High | ✅ Done |
+| 3 | Redis-backed counters | Medium | ✅ Done |
+| 4 | Per-action type limits | Medium | ✅ Done |
 
 ### Human Behavior Simulation
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 5 | Random delay generator (15-45 sec) | High | ❌ To Do |
-| 6 | Sleep hours (11 PM - 7 AM) | Medium | ❌ To Do |
-| 7 | Randomized action sequences | Medium | ❌ To Do |
-| 8 | Warmup protocol for new accounts | Low | ❌ To Do |
+| 5 | Random delay generator (15-45 sec) | High | ✅ Done |
+| 6 | Sleep hours (11 PM - 7 AM) | Medium | ✅ Done |
+| 7 | Randomized action sequences | Medium | ✅ Done |
+| 8 | Warmup protocol for new accounts | Low | ✅ Done |
 
 ### Risk Management
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 9 | Account health score tracker | Medium | ❌ To Do |
-| 10 | Detect warning/ban signals | High | ❌ To Do |
-| 11 | Auto-pause on detection | High | ❌ To Do |
-| 12 | Action logging for audit | Medium | ❌ To Do |
+| 9 | Account health score tracker | Medium | ✅ Done |
+| 10 | Detect warning/ban signals | High | ✅ Done |
+| 11 | Auto-pause on detection | High | ✅ Done |
+| 12 | Action logging for audit | Medium | ✅ Done |
 
 ---
 
@@ -108,18 +108,18 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 ### Spiders
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Hashtag spider (public posts) | Medium | ❌ To Do |
-| 2 | Profile spider (public data) | Medium | ❌ To Do |
-| 3 | Comments spider | Low | ❌ To Do |
-| 4 | Followers list spider | Low | ❌ To Do |
+| 1 | Hashtag spider (public posts) | Medium | ✅ Done |
+| 2 | Profile spider (public data) | Medium | ✅ Done |
+| 3 | Comments spider | Low | ✅ Done |
+| 4 | Followers list spider | Low | ✅ Done |
 
 ### Infrastructure
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 5 | Data pipeline to MongoDB | Medium | ❌ To Do |
-| 6 | Proxy rotation middleware | Medium | ❌ To Do |
-| 7 | Request throttling | Medium | ❌ To Do |
-| 8 | Error handling & retry | Medium | ❌ To Do |
+| 5 | Data pipeline to MongoDB | Medium | ✅ Done |
+| 6 | Proxy rotation middleware | Medium | ✅ Done |
+| 7 | Request throttling | Medium | ✅ Done |
+| 8 | Error handling & retry | Medium | ✅ Done |
 
 ---
 
@@ -127,12 +127,12 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Browser driver setup | Low | ❌ To Do |
-| 2 | Anti-detection config | Low | ❌ To Do |
-| 3 | Login flow | Low | ❌ To Do |
-| 4 | Basic navigation | Low | ❌ To Do |
-| 5 | Profile scraping | Low | ❌ To Do |
-| 6 | Fallback trigger from Playwright | Low | ❌ To Do |
+| 1 | Browser driver setup | Low | ✅ Done |
+| 2 | Anti-detection config | Low | ✅ Done |
+| 3 | Login flow | Low | ✅ Done |
+| 4 | Basic navigation | Low | ✅ Done |
+| 5 | Profile scraping | Low | ✅ Done |
+| 6 | Fallback trigger from Playwright | Low | ✅ Done |
 
 ---
 
@@ -140,12 +140,12 @@ This roadmap covers **all tasks** needed to complete the `automation/` module.
 
 | Module | Done | To Do | Total |
 |--------|------|-------|-------|
-| Playwright | 21 | 1 | 22 |
-| Downloader | 4 | 8 | 12 |
-| Safety | 0 | 12 | 12 |
-| Scrapy | 0 | 8 | 8 |
-| Selenium | 0 | 6 | 6 |
-| **TOTAL** | **25** | **35** | **60** |
+| Playwright | 22 | 0 | 22 |
+| Downloader | 12 | 0 | 12 |
+| Safety | 12 | 0 | 12 |
+| Scrapy | 8 | 0 | 8 |
+| Selenium | 6 | 0 | 6 |
+| **TOTAL** | **60** | **0** | **60** |
 
 ---
 
