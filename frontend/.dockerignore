@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+.git
+.gitignore
+.env
+*.log
+*.heapsnapshot
+.DS_Store
+.idea
+.vscode
+.pytest_cache
+tmp
+artifacts
+screenshots

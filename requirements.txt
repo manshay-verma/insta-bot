@@ -5,6 +5,7 @@ lxml==4.9.3
 scrapy==2.11.0
 selenium==4.15.2
 playwright==1.40.0
+pyotp==2.9.0
 
 # Django Backend
 django==4.2.7

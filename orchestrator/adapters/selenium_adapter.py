@@ -12,9 +12,19 @@ from typing import Optional, Dict, List, Any
 
 from .base_adapter import BaseAdapter, AdapterType, TaskType, TaskResult
 
-# Add automation to path
-automation_path = Path(__file__).parent.parent.parent / "automation"
-sys.path.insert(0, str(automation_path))
+# Ensure repo root is on sys.path so `automation.*` imports work reliably
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+try:
+    from automation.selenium_engine.driver_manager import DriverManager, BrowserType
+    from automation.selenium_engine.navigation import Navigation
+    from automation.selenium_engine.auth.login import SeleniumLogin
+    from automation.selenium_engine.scraper.profile_scraper import ProfileScraper
+except ImportError as e:
+    DriverManager = BrowserType = Navigation = SeleniumLogin = ProfileScraper = None
+    _selenium_import_error = e
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +60,10 @@ class SeleniumAdapter(BaseAdapter):
     
     async def initialize(self) -> bool:
         """Initialize Selenium WebDriver."""
+        if DriverManager is None or Navigation is None:
+            logger.error(f"Failed to import Selenium modules: {_selenium_import_error}")
+            return False
         try:
-            from selenium_engine.driver_manager import DriverManager, BrowserType
-            from selenium_engine.navigation import Navigation
-            
             # Fetch account for proxy config
             await self.fetch_account()
             proxy = self.get_proxy_config()
@@ -137,10 +147,14 @@ class SeleniumAdapter(BaseAdapter):
         """Login to Instagram via Selenium."""
         username = self._account_data.get("username")
         
-        try:
-            from selenium_engine.auth.login import SeleniumLogin
+        if SeleniumLogin is None:
+            return TaskResult(
+                success=False,
+                task_type=TaskType.LOGIN,
+                errors=[f"Selenium login is unavailable: {_selenium_import_error}"]
+            )
 
-            
+        try:
             login_handler = SeleniumLogin(self.driver)
             success = login_handler.login(username, "")  # Use cookies
             
@@ -161,26 +175,30 @@ class SeleniumAdapter(BaseAdapter):
         results = []
         errors = []
         
-        try:
-            from selenium_engine.scraper.profile_scraper import ProfileScraper
+        if ProfileScraper is None:
+            errors.append("ProfileScraper not available")
+            return TaskResult(
+                success=False,
+                task_type=TaskType.SCRAPE_PROFILE,
+                data={"profiles": results},
+                items_processed=len(results),
+                errors=errors
+            )
 
-            scraper = ProfileScraper(self.driver)
-            
-            for username in targets:
-                try:
-                    profile = scraper.scrape_profile(username)
-                    if profile:
-                        results.append(profile)
-                        if self.callback:
-                            self.callback.on_scrape_profile(username, True, profile)
-                except Exception as e:
-                    errors.append(f"@{username}: {str(e)}")
+        scraper = ProfileScraper(self.driver)
+
+        for username in targets:
+            try:
+                profile = scraper.scrape_profile(username)
+                if profile:
+                    results.append(profile)
                     if self.callback:
-                        self.callback.on_scrape_profile(username, False, error_message=str(e))
-        except ImportError:
-            # Scraper not implemented yet
-            errors.append("ProfileScraper not implemented")
-        
+                        self.callback.on_scrape_profile(username, True, profile)
+            except Exception as e:
+                errors.append(f"@{username}: {str(e)}")
+                if self.callback:
+                    self.callback.on_scrape_profile(username, False, error_message=str(e))
+
         return TaskResult(
             success=len(results) > 0,
             task_type=TaskType.SCRAPE_PROFILE,

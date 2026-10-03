@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from browser_manager import InstagramBrowser
+from automation.playwright_engine.browser_manager import InstagramBrowser
 
 # Fix Windows console encoding for emoji support
 if sys.platform == 'win32':

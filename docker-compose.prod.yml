@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # MySQL (additional for learning)
+  mysql:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=instabot_db
+    volumes:
+      - mysql_data:/var/lib/mysql
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Node-services (supporting websockets/workers)
+  node-ws:
+    build:
+      context: ./node_service
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/instabot
+      - REDIS_URL=redis://redis:6379/2
+    ports:
+      - "4000:4000"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    depends_on:
+      - mongodb
+      - redis
+
+  # Spark-master (orchestration)
+  spark-master:
+    build:
+      context: .
+      dockerfile: spark_jobs/Dockerfile
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes:
+      - ./spark_jobs:/app/spark_jobs
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # Frontend Nginx (Production)
+  frontend-prod:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
+
+# Reuse existing volumes from dev compose or define here
+volumes:
+  mysql_data:
+  
+networks:
+  default:
+    name: instabot_prod_network
+    driver: bridge

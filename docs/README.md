@@ -35,6 +35,7 @@
 15. [Project Structure](#-project-structure)
 16. [Contributing](#-contributing)
 17. [License & Disclaimer](#-license--disclaimer)
+18. [Local Dev Flow](#-local-dev-flow)
 
 ---
 
@@ -1177,6 +1178,12 @@ By using this project, you agree to these terms.
 ```
 
 ---
+
+# 🔌 Local Dev Flow
+
+For a practical explanation of how the **frontend ↔ backend ↔ automation (Celery)** flow connects in local development, read:
+
+- `docs/local_flow.md`
 
 <p align="center">
   <strong>Happy Learning! 🚀</strong><br>

@@ -103,9 +103,15 @@ class InstaApiClient:
             )
             
             if response.status_code >= 400:
+                # Error bodies are not guaranteed to be JSON (could be HTML/text).
+                try:
+                    err_json = response.json()
+                    err_msg = err_json.get("error") or err_json.get("detail") or response.text
+                except Exception:
+                    err_msg = response.text
                 return ApiResponse(
                     success=False,
-                    error=response.json().get("error", response.text),
+                    error=err_msg,
                     status_code=response.status_code
                 )
             
@@ -256,7 +262,9 @@ class InstaApiClient:
         if metadata:
             data["metadata"] = metadata
         
-        return self._request("POST", "/actions/", data=data)
+        # ActionLog endpoints live under analytics router in this codebase.
+        # See backend/analytics/urls.py -> router.register('actions', ActionLogViewSet)
+        return self._request("POST", "/analytics/actions/", data=data)
     
     # ==================== Proxies ====================
     

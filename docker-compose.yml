@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=instabot_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  backend:
+    build:
+      context: .
+      dockerfile: infradocker/backend.Dockerfile
+    volumes:
+      - ./backend:/app/backend
+      - ./orchestrator:/app/orchestrator
+      - ./artifacts:/app/artifacts
+    working_dir: /app/backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - DB_NAME=instabot_db
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_HOST=db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - PYTHONPATH=/app
+    depends_on:
+      - db
+      - redis
+      - mongodb
+
+  worker:
+    build:
+      context: .
+      dockerfile: infradocker/automation.Dockerfile
+    volumes:
+      - .:/app
+    working_dir: /app/backend
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DB_HOST=db
+      - DB_NAME=instabot_db
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=config.settings
+    command: celery -A config worker --loglevel=info
+    depends_on:
+      - redis
+      - db
+
+  frontend:
+    image: node:20-alpine
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
+      - VITE_WS_URL=ws://localhost:8000/ws/updates/
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on:
+      - backend
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: infradocker/spark.Dockerfile
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark_jobs:/app/spark_jobs
+
+  node-ws:
+    build:
+      context: .
+      dockerfile: infradocker/node_service.Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/instabot
+    depends_on:
+      - mongodb
+      - redis
+
+volumes:
+  postgres_data:
+  mongodb_data:
