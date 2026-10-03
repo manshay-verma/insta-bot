@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from browser_manager import InstagramBrowser
+from .browser_manager import InstagramBrowser
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

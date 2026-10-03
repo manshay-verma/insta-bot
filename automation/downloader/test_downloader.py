@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from automation.downloader.media_downloader import MediaDownloader
 
 class TestMediaDownloader(unittest.TestCase):
-
+ 
     def setUp(self):
         self.download_dir = "test_downloads"
         self.downloader = MediaDownloader(download_dir=self.download_dir)

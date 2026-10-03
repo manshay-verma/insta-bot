@@ -19,9 +19,16 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 
-# Add automation module to path
-automation_path = Path(__file__).parent.parent / "automation"
-sys.path.insert(0, str(automation_path))
+# Ensure repo root is on sys.path so `automation.*` imports work reliably
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+try:
+    from automation.playwright_engine.browser_manager import InstagramBrowser
+except ImportError as e:
+    InstagramBrowser = None
+    _playwright_import_error = e
 
 from .api_client import InstaApiClient, AccountStatus
 from .callbacks import ActionCallback
@@ -165,9 +172,10 @@ class BotWorker:
     
     async def _init_browser(self) -> bool:
         """Initialize browser with automation module."""
+        if InstagramBrowser is None:
+            logger.error(f"Failed to import automation module: {_playwright_import_error}")
+            return False
         try:
-            from playwright.browser_manager import InstagramBrowser
-            
             proxy = self._get_proxy_config()
             self.browser = InstagramBrowser(
                 headless=self.headless,
@@ -178,9 +186,6 @@ class BotWorker:
             logger.info("Browser initialized")
             return True
             
-        except ImportError as e:
-            logger.error(f"Failed to import automation module: {e}")
-            return False
         except Exception as e:
             logger.error(f"Failed to initialize browser: {e}")
             return False

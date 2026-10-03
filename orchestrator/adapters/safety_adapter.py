@@ -13,9 +13,24 @@ from typing import Optional, Dict, List, Any
 
 from .base_adapter import BaseAdapter, AdapterType, TaskType, TaskResult
 
-# Add automation to path
-automation_path = Path(__file__).parent.parent.parent / "automation"
-sys.path.insert(0, str(automation_path))
+# Ensure repo root is on sys.path so `automation.*` imports work reliably
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+try:
+    from automation.safety import (
+        RateLimiter,
+        MemoryRateLimiter,
+        DelayGenerator,
+        HealthTracker,
+        ActionLogger,
+        SafetyConfig,
+        SleepSchedule,
+    )
+except ImportError as e:
+    RateLimiter = MemoryRateLimiter = DelayGenerator = HealthTracker = ActionLogger = SafetyConfig = SleepSchedule = None
+    _safety_import_error = e
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +75,10 @@ class SafetyAdapter(BaseAdapter):
     
     async def initialize(self) -> bool:
         """Initialize safety components."""
+        if RateLimiter is None:
+            logger.error(f"Failed to import safety module: {_safety_import_error}")
+            return False
         try:
-            from safety import (
-                RateLimiter,
-                MemoryRateLimiter,
-                DelayGenerator,
-                HealthTracker,
-                ActionLogger,
-                SafetyConfig,
-            )
-            
             # Use memory-based rate limiter by default
             self.rate_limiter = MemoryRateLimiter(account_id=str(self.account_id))
             self.delay_generator = DelayGenerator()
@@ -256,8 +265,13 @@ class SafetyAdapter(BaseAdapter):
     
     async def get_sleep_schedule(self) -> Dict[str, Any]:
         """Get recommended sleep hours."""
+        if SleepSchedule is None:
+            return {
+                "should_sleep": False,
+                "fallback": True
+            }
+
         try:
-            from safety import SleepSchedule
             schedule = SleepSchedule()
             
             return {

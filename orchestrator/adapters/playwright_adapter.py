@@ -13,11 +13,16 @@ from typing import Optional, Dict, List, Any
 
 from .base_adapter import BaseAdapter, AdapterType, TaskType, TaskResult
 
-# Add automation to path
-automation_path = Path(__file__).parent.parent.parent / "automation"
-sys.path.insert(0, str(automation_path))
+# Ensure repo root is on sys.path so `automation.*` imports work reliably
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-
+try:
+    from automation.playwright_engine.browser_manager import InstagramBrowser
+except ImportError as e:
+    InstagramBrowser = None
+    _playwright_import_error = e
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +57,10 @@ class PlaywrightAdapter(BaseAdapter):
     
     async def initialize(self) -> bool:
         """Initialize Playwright browser."""
+        if InstagramBrowser is None:
+            logger.error(f"Failed to import Playwright: {_playwright_import_error}")
+            return False
         try:
-            from playwright_engine.browser_manager import InstagramBrowser
-            
             # Fetch account for proxy config
             await self.fetch_account()
             proxy = self.get_proxy_config()
@@ -139,6 +145,17 @@ class PlaywrightAdapter(BaseAdapter):
             )
         
         return await handler(targets, **kwargs)
+
+    async def _ensure_logged_in(self, **kwargs) -> bool:
+        """
+        Best-effort cookie login before actions that require auth.
+        """
+        if self._logged_in:
+            return True
+        # Allow passing bootstrap password via options (kwargs)
+        login_res = await self._login([], **kwargs)
+        self._logged_in = bool(login_res.success)
+        return self._logged_in
     
     # ==================== Task Handlers ====================
     
@@ -158,25 +175,80 @@ class PlaywrightAdapter(BaseAdapter):
             cookie_sync.export_to_file(cookies)
         
         try:
-            await self.browser.login(
-                username=username,
-                password="",  # Uses cookies
-                cookie_path=cookie_path
-            )
-            
-            if await self.browser.is_session_valid():
-                self._logged_in = True
-                return TaskResult(
-                    success=True,
-                    task_type=TaskType.LOGIN,
-                    data={"username": username, "method": "cookies"}
+            # 1) Try cookie-based login if present
+            if cookie_path:
+                ok = await self.browser.login(
+                    username=username,
+                    password="",
+                    cookie_path=cookie_path
                 )
-            else:
+                if ok and await self.browser.is_session_valid():
+                    self._logged_in = True
+                    # Sync fresh cookies back (cookies may get rotated by IG)
+                    try:
+                        fresh = await self.browser.get_cookies()
+                        cookie_sync.save_to_backend(fresh)
+                    except Exception:
+                        pass
+                    return TaskResult(
+                        success=True,
+                        task_type=TaskType.LOGIN,
+                        data={"username": username, "method": "cookies"}
+                    )
+
+            # 2) Fall back to password login using encrypted password stored in DB
+            try:
+                # Allow passing plaintext password once via API options to bootstrap cookies.
+                provided_password = kwargs.get("password") or kwargs.get("ig_password")
+
+                async def _get_or_set_password_from_db() -> str:
+                    # Django ORM is sync-only; run in a thread.
+                    from asgiref.sync import sync_to_async
+                    from account.models import BotAccount
+                    from account.utils import decrypt_password, encrypt_password
+
+                    def _sync() -> str:
+                        account = BotAccount.objects.get(id=self.account_id)
+                        if provided_password:
+                            account.password_encrypted = encrypt_password(str(provided_password))
+                            account.save(update_fields=["password_encrypted"])
+                            return str(provided_password)
+                        return decrypt_password(account.password_encrypted)
+
+                    return await sync_to_async(_sync, thread_sensitive=True)()
+
+                password = await _get_or_set_password_from_db()
+            except Exception as e:
                 return TaskResult(
                     success=False,
                     task_type=TaskType.LOGIN,
-                    errors=["Session invalid after login"]
+                    errors=[f"Cannot load/decrypt bot password for account {self.account_id}: {e}"]
                 )
+
+            ok = await self.browser.login(
+                username=username,
+                password=password,
+                cookie_path=cookie_path or str(cookie_sync.cookie_file_path),
+            )
+
+            if ok and await self.browser.is_session_valid():
+                self._logged_in = True
+                try:
+                    fresh = await self.browser.get_cookies()
+                    cookie_sync.save_to_backend(fresh)
+                except Exception:
+                    pass
+                return TaskResult(
+                    success=True,
+                    task_type=TaskType.LOGIN,
+                    data={"username": username, "method": "password"}
+                )
+
+            return TaskResult(
+                success=False,
+                task_type=TaskType.LOGIN,
+                errors=["Login failed or checkpointed (session invalid)"]
+            )
         except Exception as e:
             return TaskResult(
                 success=False,
@@ -240,18 +312,29 @@ class PlaywrightAdapter(BaseAdapter):
     
     async def _like_posts(self, targets: List[str], **kwargs) -> TaskResult:
         """Like posts by URL."""
+        if not await self._ensure_logged_in(**kwargs):
+            return TaskResult(
+                success=False,
+                task_type=TaskType.LIKE_POSTS,
+                items_processed=0,
+                errors=["Not logged in (cookie session invalid). Run login / update cookies first."],
+            )
+
         success_count = 0
         errors = []
         
         for url in targets:
             try:
                 result = await self.browser.like_post(url)
-                if result:
+                if result and result.get("success"):
                     success_count += 1
                     if self.callback:
                         self.callback.on_like(url, True)
                 else:
-                    errors.append(f"Failed to like: {url}")
+                    err = None
+                    if isinstance(result, dict):
+                        err = result.get("error")
+                    errors.append(f"Failed to like: {url}" + (f" ({err})" if err else ""))
                     if self.callback:
                         self.callback.on_like(url, False)
             except Exception as e:
@@ -290,13 +373,21 @@ class PlaywrightAdapter(BaseAdapter):
     
     async def _follow_users(self, targets: List[str], **kwargs) -> TaskResult:
         """Follow users by username."""
+        if not await self._ensure_logged_in(**kwargs):
+            return TaskResult(
+                success=False,
+                task_type=TaskType.FOLLOW_USERS,
+                items_processed=0,
+                errors=["Not logged in (cookie session invalid). Run login / update cookies first."],
+            )
+
         success_count = 0
         errors = []
         
         for username in targets:
             try:
                 result = await self.browser.follow_user(username)
-                if result:
+                if result and (not isinstance(result, dict) or result.get("success", True)):
                     success_count += 1
                     if self.callback:
                         self.callback.on_follow(username, True)
@@ -317,13 +408,21 @@ class PlaywrightAdapter(BaseAdapter):
     
     async def _unfollow_users(self, targets: List[str], **kwargs) -> TaskResult:
         """Unfollow users by username."""
+        if not await self._ensure_logged_in(**kwargs):
+            return TaskResult(
+                success=False,
+                task_type=TaskType.UNFOLLOW_USERS,
+                items_processed=0,
+                errors=["Not logged in (cookie session invalid). Run login / update cookies first."],
+            )
+
         success_count = 0
         errors = []
         
         for username in targets:
             try:
                 result = await self.browser.unfollow_user(username)
-                if result:
+                if result and (not isinstance(result, dict) or result.get("success", True)):
                     success_count += 1
                     if self.callback:
                         self.callback.on_unfollow(username, True)
@@ -339,6 +438,14 @@ class PlaywrightAdapter(BaseAdapter):
     
     async def _view_stories(self, targets: List[str], **kwargs) -> TaskResult:
         """View stories by username."""
+        if not await self._ensure_logged_in(**kwargs):
+            return TaskResult(
+                success=False,
+                task_type=TaskType.VIEW_STORIES,
+                items_processed=0,
+                errors=["Not logged in (cookie session invalid). Run login / update cookies first."],
+            )
+
         success_count = 0
         errors = []
         
@@ -363,6 +470,14 @@ class PlaywrightAdapter(BaseAdapter):
     
     async def _comment(self, targets: List[str], **kwargs) -> TaskResult:
         """Comment on posts."""
+        if not await self._ensure_logged_in(**kwargs):
+            return TaskResult(
+                success=False,
+                task_type=TaskType.COMMENT,
+                items_processed=0,
+                errors=["Not logged in (cookie session invalid). Run login / update cookies first."],
+            )
+
         comment_text = kwargs.get("comment_text", "")
         success_count = 0
         errors = []
@@ -370,7 +485,7 @@ class PlaywrightAdapter(BaseAdapter):
         for url in targets:
             try:
                 result = await self.browser.comment_on_post(url, comment_text)
-                if result:
+                if result and (not isinstance(result, dict) or result.get("success", True)):
                     success_count += 1
                     if self.callback:
                         self.callback.on_comment(url, comment_text, True)

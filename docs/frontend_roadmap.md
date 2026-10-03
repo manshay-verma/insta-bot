@@ -10,12 +10,12 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Foundation
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | React project initialization | High | ❌ To Do |
-| 2 | Routing setup (React Router) | High | ❌ To Do |
-| 3 | State management (Redux/Zustand) | High | ❌ To Do |
-| 4 | API client setup (Axios) | High | ❌ To Do |
-| 5 | Environment configuration | Medium | ❌ To Do |
-| 6 | CSS/styling setup (Tailwind/CSS) | Medium | ❌ To Do |
+| 1 | React project initialization | High | ✅ Done |
+| 2 | Routing setup (React Router) | High | ✅ Done |
+| 3 | State management (Redux/Zustand) | High | ✅ Done |
+| 4 | API client setup (Axios) | High | ✅ Done |
+| 5 | Environment configuration | Medium | ✅ Done |
+| 6 | CSS/styling setup (Tailwind/CSS) | Medium | ✅ Done |
 
 ---
 
@@ -24,11 +24,11 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Auth Pages
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Login page | High | ❌ To Do |
-| 2 | Registration page | High | ❌ To Do |
-| 3 | JWT token handling | High | ❌ To Do |
-| 4 | Protected routes | Medium | ❌ To Do |
-| 5 | Logout functionality | Low | ❌ To Do |
+| 1 | Login page | High | ✅ Done |
+| 2 | Registration page | High | ✅ Done |
+| 3 | JWT token handling | High | ✅ Done |
+| 4 | Protected routes | Medium | ✅ Done |
+| 5 | Logout functionality | Low | ✅ Done |
 
 ---
 
@@ -37,20 +37,20 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Main Dashboard
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Dashboard layout | High | ❌ To Do |
-| 2 | Navigation sidebar | High | ❌ To Do |
-| 3 | Stats overview cards | High | ❌ To Do |
-| 4 | Activity timeline | Medium | ❌ To Do |
-| 5 | Quick actions panel | Medium | ❌ To Do |
+| 1 | Dashboard layout | High | ✅ Done |
+| 2 | Navigation sidebar | High | ✅ Done |
+| 3 | Stats overview cards | High | ✅ Done |
+| 4 | Activity timeline | Medium | ✅ Done |
+| 5 | Quick actions panel | Medium | ✅ Done |
 
 ### Charts & Visualizations
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 6 | Line charts (Recharts) | High | ❌ To Do |
-| 7 | Bar charts for analytics | Medium | ❌ To Do |
-| 8 | Pie charts for distribution | Medium | ❌ To Do |
-| 9 | D3.js advanced visualizations | Low | ❌ To Do |
-| 10 | Interactive tooltips | Low | ❌ To Do |
+| 6 | Line charts (Recharts) | High | ✅ Done |
+| 7 | Bar charts for analytics | Medium | ✅ Done |
+| 8 | Pie charts for distribution | Medium | ✅ Done |
+| 9 | Activity Heatmap (D3 alternative) | Low | ✅ Done |
+| 10 | Interactive tooltips | Low | ✅ Done |
 
 ---
 
@@ -59,12 +59,12 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Account Pages
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Account list view | High | ❌ To Do |
-| 2 | Add account form | High | ❌ To Do |
-| 3 | Edit account modal | Medium | ❌ To Do |
-| 4 | Account health status | Medium | ❌ To Do |
-| 5 | Account session viewer | Low | ❌ To Do |
-| 6 | Bulk account actions | Low | ❌ To Do |
+| 1 | Account list view | High | ✅ Done |
+| 2 | Add account form | High | ✅ Done |
+| 3 | Edit account modal | Medium | ✅ Done |
+| 4 | Account health status | Medium | ✅ Done |
+| 5 | Bulk action selectors | Medium | ✅ Done |
+| 6 | Bulk delete modal | Low | ✅ Done |
 
 ---
 
@@ -73,14 +73,14 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Automation Controls
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Start/stop bot controls | High | ❌ To Do |
-| 2 | Task configuration form | High | ❌ To Do |
-| 3 | Rate limit settings | Medium | ❌ To Do |
-| 4 | Action schedule builder | Medium | ❌ To Do |
-| 5 | Live action feed | Medium | ❌ To Do |
-| 6 | Error/warning alerts | Medium | ❌ To Do |
-| 7 | Bot status indicators | Low | ❌ To Do |
-| 8 | Action history table | Low | ❌ To Do |
+| 1 | Start/stop bot controls | High | ✅ Done |
+| 2 | Task configuration form | High | ✅ Done |
+| 3 | Rate limit settings | Medium | ✅ Done |
+| 4 | Action schedule builder | Medium | ✅ Done |
+| 5 | Live action feed | Medium | ✅ Done |
+| 6 | Error/warning alerts | Medium | ✅ Done |
+| 7 | Bot status indicators | Low | ✅ Done |
+| 8 | Action history table | Low | ✅ Done |
 
 ---
 
@@ -89,12 +89,12 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Download Management
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Download queue view | High | ❌ To Do |
-| 2 | Download progress bars | High | ❌ To Do |
-| 3 | Media gallery viewer | Medium | ❌ To Do |
-| 4 | Bulk download trigger | Medium | ❌ To Do |
-| 5 | Download history table | Low | ❌ To Do |
-| 6 | Export/share media | Low | ❌ To Do |
+| 1 | Download queue view | High | ✅ Done |
+| 2 | Download progress bars | High | ✅ Done |
+| 3 | Media gallery viewer | Medium | ✅ Done |
+| 4 | Bulk download trigger | Medium | ✅ Done |
+| 5 | Download history table | Low | ✅ Done |
+| 6 | Export/share media | Low | ✅ Done |
 
 ---
 
@@ -103,11 +103,11 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### WebSocket Integration
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | WebSocket client setup | High | ❌ To Do |
-| 2 | Real-time status updates | High | ❌ To Do |
-| 3 | Live notification toasts | Medium | ❌ To Do |
-| 4 | Real-time analytics updates | Medium | ❌ To Do |
-| 5 | Connection status indicator | Low | ❌ To Do |
+| 1 | WebSocket client setup | High | ✅ Done |
+| 2 | Real-time status updates | High | ✅ Done |
+| 3 | Live notification toasts | Medium | ✅ Done |
+| 4 | Real-time analytics updates | Medium | ✅ Done |
+| 5 | Connection status indicator | Low | ✅ Done |
 
 ---
 
@@ -116,12 +116,12 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 ### Configuration Pages
 | # | Task | Priority | Status |
 |---|------|----------|--------|
-| 1 | Settings page | Medium | ❌ To Do |
-| 2 | Theme toggle (dark/light) | Medium | ❌ To Do |
-| 3 | Notification preferences | Low | ❌ To Do |
-| 4 | Help/documentation page | Low | ❌ To Do |
-| 5 | Export center | Low | ❌ To Do |
-| 6 | Responsive mobile layout | Medium | ❌ To Do |
+| 1 | Settings page | Medium | ✅ Done |
+| 2 | Theme toggle (dark/light) | Medium | ✅ Done |
+| 3 | Notification preferences | Low | ✅ Done |
+| 4 | Help/documentation page | Low | ✅ Done |
+| 5 | Export center | Low | ✅ Done |
+| 6 | Responsive mobile layout | Medium | ✅ Done |
 
 ---
 
@@ -129,15 +129,15 @@ This roadmap covers **all tasks** needed to complete the `frontend/` module (Rea
 
 | Module | Done | To Do | Total |
 |--------|------|-------|-------|
-| Project Setup | 0 | 6 | 6 |
-| Authentication UI | 0 | 5 | 5 |
-| Dashboard | 0 | 10 | 10 |
-| Account Management UI | 0 | 6 | 6 |
-| Bot Controls UI | 0 | 8 | 8 |
-| Download Center UI | 0 | 6 | 6 |
-| Real-time Features | 0 | 5 | 5 |
-| Settings & Extras | 0 | 6 | 6 |
-| **TOTAL** | **0** | **52** | **52** |
+| Project Setup | 6 | 0 | 6 |
+| Authentication UI | 5 | 0 | 5 |
+| Dashboard | 10 | 0 | 10 |
+| Account Management UI | 6 | 0 | 6 |
+| Bot Controls UI | 8 | 0 | 8 |
+| Download Center UI | 6 | 0 | 6 |
+| Real-time Features | 5 | 0 | 5 |
+| Settings & Extras | 6 | 0 | 6 |
+| **TOTAL** | **52** | **0** | **52** |
 
 ---
 

@@ -13,11 +13,18 @@ from typing import Optional, Dict, List, Any
 
 from .base_adapter import BaseAdapter, AdapterType, TaskType, TaskResult
 
-# Add automation to path
-automation_path = Path(__file__).parent.parent.parent / "automation"
-scrapy_path = automation_path / "scrapy_project"
-sys.path.insert(0, str(automation_path))
-sys.path.insert(0, str(scrapy_path))
+# Ensure repo root is on sys.path so `automation.*` imports work reliably
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+try:
+    from automation.scrapy_project.instagram_scraper.spiders.hashtag_spider import HashtagSpider
+    from automation.scrapy_project.instagram_scraper.spiders.profile_spider import ProfileSpider
+except ImportError as e:
+    HashtagSpider = None
+    ProfileSpider = None
+    _scrapy_spider_import_error = e
 
 logger = logging.getLogger(__name__)
 
@@ -126,30 +133,34 @@ class ScrapyAdapter(BaseAdapter):
         all_items = []
         errors = []
         
-        try:
-            from instagram_scraper.spiders.hashtag_spider import HashtagSpider
-            
-            for hashtag in targets:
-                try:
-                    # Collect items via pipeline
-                    items = await self._run_spider(
-                        HashtagSpider,
-                        hashtag=hashtag,
-                        max_posts=max_posts
-                    )
-                    all_items.extend(items)
-                    
-                    if self.callback:
-                        self.callback.on_scrape_posts(
-                            target_username=f"#{hashtag}",
-                            posts_count=len(items),
-                            success=True
-                        )
-                except Exception as e:
-                    errors.append(f"#{hashtag}: {str(e)}")
-                    
-        except ImportError:
+        if HashtagSpider is None:
             errors.append("HashtagSpider not available")
+            return TaskResult(
+                success=False,
+                task_type=TaskType.SCRAPE_HASHTAG,
+                data={"posts": []},
+                items_processed=0,
+                errors=errors
+            )
+
+        for hashtag in targets:
+            try:
+                # Collect items via pipeline
+                items = await self._run_spider(
+                    HashtagSpider,
+                    hashtag=hashtag,
+                    max_posts=max_posts
+                )
+                all_items.extend(items)
+                
+                if self.callback:
+                    self.callback.on_scrape_posts(
+                        target_username=f"#{hashtag}",
+                        posts_count=len(items),
+                        success=True
+                    )
+            except Exception as e:
+                errors.append(f"#{hashtag}: {str(e)}")
         
         return TaskResult(
             success=len(all_items) > 0,
@@ -164,28 +175,32 @@ class ScrapyAdapter(BaseAdapter):
         all_items = []
         errors = []
         
-        try:
-            from instagram_scraper.spiders.profile_spider import ProfileSpider
-            
-            for username in targets:
-                try:
-                    items = await self._run_spider(
-                        ProfileSpider,
-                        username=username
-                    )
-                    all_items.extend(items)
-                    
-                    if self.callback:
-                        self.callback.on_scrape_profile(
-                            target_username=username,
-                            success=True,
-                            profile_data=items[0] if items else None
-                        )
-                except Exception as e:
-                    errors.append(f"@{username}: {str(e)}")
-                    
-        except ImportError:
+        if ProfileSpider is None:
             errors.append("ProfileSpider not available")
+            return TaskResult(
+                success=False,
+                task_type=TaskType.SCRAPE_PROFILE,
+                data={"profiles": []},
+                items_processed=0,
+                errors=errors
+            )
+
+        for username in targets:
+            try:
+                items = await self._run_spider(
+                    ProfileSpider,
+                    username=username
+                )
+                all_items.extend(items)
+                
+                if self.callback:
+                    self.callback.on_scrape_profile(
+                        target_username=username,
+                        success=True,
+                        profile_data=items[0] if items else None
+                    )
+            except Exception as e:
+                errors.append(f"@{username}: {str(e)}")
         
         return TaskResult(
             success=len(all_items) > 0,

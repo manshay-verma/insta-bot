@@ -1,0 +1,20 @@
+{
+  "name": "insta-bot-node-services",
+  "version": "1.0.0",
+  "description": "Real-time Node.js services for Instagram Bot",
+  "main": "websocket/server.js",
+  "scripts": {
+    "start": "node websocket/server.js",
+    "dev": "nodemon websocket/server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "mongoose": "^8.0.0",
+    "redis": "^4.6.10",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

@@ -13,9 +13,16 @@ from typing import Optional, Dict, List, Any
 
 from .base_adapter import BaseAdapter, AdapterType, TaskType, TaskResult
 
-# Add automation to path
-automation_path = Path(__file__).parent.parent.parent / "automation"
-sys.path.insert(0, str(automation_path))
+# Ensure repo root is on sys.path so `automation.*` imports work reliably
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+try:
+    from automation.downloader.media_downloader import MediaDownloader
+except ImportError as e:
+    MediaDownloader = None
+    _downloader_import_error = e
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +67,10 @@ class DownloaderAdapter(BaseAdapter):
     
     async def initialize(self) -> bool:
         """Initialize MediaDownloader."""
+        if MediaDownloader is None:
+            logger.error(f"Failed to import MediaDownloader: {_downloader_import_error}")
+            return False
         try:
-            from downloader.media_downloader import MediaDownloader
-            
             self.downloader = MediaDownloader(
                 download_dir=self.download_dir,
                 organize_by_type=self.organize_by_type,

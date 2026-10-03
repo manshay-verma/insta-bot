@@ -44,7 +44,12 @@ ENV/
 # Bot Data/Cookies
 cookies.json
 *.log
+db.sqlite3
 
 # Misc
+node_modules/
+dist/
+build/
 .DS_Store
 Thumbs.db
+

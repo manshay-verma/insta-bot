@@ -1,9 +1,10 @@
 import asyncio
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page  # pyright: ignore[reportMissingImports]
 import logging
 import random
 import json
 import os
+from datetime import datetime
 from typing import Optional, Dict
 
 # Configure logging
@@ -362,25 +363,75 @@ class InstagramBrowser:
         # Dismiss cookie consent and other popups
         await self._dismiss_popups()
 
-        # Wait for the username input to be visible
+        # Wait for the login form to be visible.
+        #
+        # Instagram markup changes frequently; rely on multiple selectors.
+        username_selectors = [
+            'input[name="username"]',
+            'input[aria-label*="username"]',
+            'input[placeholder*="username"]',
+            'input[aria-label*="email"]',
+            'input[placeholder*="email"]',
+        ]
+        password_selectors = [
+            'input[name="password"]',
+            'input[aria-label*="Password"]',
+            'input[placeholder*="Password"]',
+        ]
+        login_form_selectors = [
+            *username_selectors,
+            *password_selectors,
+            'form[action*="/accounts/login"]',
+        ]
         try:
-            await self.page.wait_for_selector('input[name="username"]', timeout=15000, state="visible")
+            await self.page.wait_for_selector(
+                ", ".join(login_form_selectors),
+                timeout=45000,
+                state="visible",
+            )
         except Exception as e:
             logger.error(f"Login page did not load properly: {e}")
-            await self.page.screenshot(path="login_error.png")
+            # Save debug artifacts to help diagnose blocks / markup changes.
+            try:
+                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                await self.page.screenshot(path=f"login_error_{ts}.png", full_page=True)
+                html = await self.page.content()
+                with open(f"login_error_{ts}.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+            except Exception:
+                # Best-effort fallback
+                try:
+                    await self.page.screenshot(path="login_error.png", full_page=True)
+                except Exception:
+                    pass
             raise RuntimeError("Could not find login form. Check login_error.png for details.")
 
+        async def _first_visible(selectors: list[str]):
+            for sel in selectors:
+                try:
+                    el = await self.page.query_selector(sel)
+                    if el:
+                        # If it's in the DOM, try to interact; Playwright will error if not visible.
+                        return sel, el
+                except Exception:
+                    continue
+            return None, None
+
         # Fill credentials with human-like typing
-        username_input = await self.page.query_selector('input[name="username"]')
+        username_sel, username_input = await _first_visible(username_selectors)
+        if not username_input:
+            raise RuntimeError("Could not find username input on login page.")
         await username_input.click()
         await asyncio.sleep(random.uniform(0.3, 0.7))
-        await self.page.fill('input[name="username"]', username)
+        await self.page.fill(username_sel, username)
         await asyncio.sleep(random.uniform(0.8, 1.5))
 
-        password_input = await self.page.query_selector('input[name="password"]')
+        password_sel, password_input = await _first_visible(password_selectors)
+        if not password_input:
+            raise RuntimeError("Could not find password input on login page.")
         await password_input.click()
         await asyncio.sleep(random.uniform(0.3, 0.7))
-        await self.page.fill('input[name="password"]', password)
+        await self.page.fill(password_sel, password)
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
         # Click login button
@@ -422,6 +473,16 @@ class InstagramBrowser:
             with open(cookie_path, 'w') as f:
                 json.dump(cookies, f)
             logger.info(f"Saved session cookies to {cookie_path}")
+        # Final validation: do not report success unless we can prove we're logged in.
+        try:
+            ok = await self.is_session_valid()
+        except Exception as e:
+            logger.error(f"Post-login session validation failed: {e}")
+            ok = False
+
+        if not ok:
+            logger.warning("Login completed but session is NOT valid (checkpoint/login likely).")
+            return False
 
         return True
 
@@ -572,7 +633,7 @@ class InstagramBrowser:
             if totp_secret and challenge_type == "TOTP Authenticator App":
                 # Automatic TOTP code generation
                 try:
-                    import pyotp  # pip install pyotp
+                    import pyotp  # pyright: ignore[reportMissingImports]  # pip install pyotp
                     totp = pyotp.TOTP(totp_secret)
                     code = totp.now()
                     logger.info(f"Generated TOTP code automatically (attempt {attempt}).")
@@ -854,6 +915,12 @@ class InstagramBrowser:
             'has_csrf_token': csrf_token is not None,
             'current_url': self.page.url,
         }
+
+    async def get_cookies(self):
+        """
+        Return raw browser cookies suitable for storing in BotAccount.cookies_json.
+        """
+        return await self.context.cookies()
 
     async def visit_profile(self, target_username: str):
         """
@@ -2513,6 +2580,14 @@ class InstagramBrowser:
             await asyncio.sleep(random.uniform(0.5, 1))
             now_liked = await self.page.evaluate('''
                 () => {
+                    // If we got bounced to login, it's definitely not liked.
+                    if (location.pathname.includes('/accounts/login')) return false;
+
+                    // If a login modal/form is present, the action likely didn't apply.
+                    const loginUser = document.querySelector('input[name="username"]');
+                    const loginPass = document.querySelector('input[name="password"]');
+                    if (loginUser && loginPass) return false;
+
                     // Method 1: Check for Unlike aria-label
                     const unlikeBtn = document.querySelector('svg[aria-label="Unlike"]');
                     if (unlikeBtn) return true;
@@ -2542,10 +2617,13 @@ class InstagramBrowser:
                 result['success'] = True
                 logger.info(f"Successfully liked post: {result.get('post_id', 'current')}")
             else:
-                # One more check - maybe the button just visually changed
-                result['success'] = True  # Assume success if click went through
-                result['error'] = None
-                logger.info(f"Like button clicked (verification inconclusive): {result.get('post_id', 'current')}")
+                # Do NOT assume success if we can't confirm state change.
+                result['success'] = False
+                result['error'] = (
+                    "Like click happened but could not confirm it stuck. "
+                    "Possible causes: not logged in, UI changed, or action blocked."
+                )
+                logger.info(f"Like click attempted but NOT confirmed: {result.get('post_id', 'current')}")
             
             return result
             
