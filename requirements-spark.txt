@@ -1,0 +1,4 @@
+# Required by pyspark.ml used in spark_jobs/ml/recommendation_als.py
+numpy==1.26.4
+# PySpark distribution metadata requires this version; the base image bundles its ZIP.
+py4j==0.10.9.7

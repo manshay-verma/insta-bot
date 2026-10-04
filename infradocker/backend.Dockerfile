@@ -1,18 +1,13 @@
 # Production Backend Dockerfile
-FROM python:3.11-slim
-WORKDIR /app/backend
+FROM python:3.11-slim-bookworm
+WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libpq-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+COPY requirements-backend.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements-backend.txt
 
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
-
+WORKDIR /app/backend
 COPY . /app/
 RUN useradd -m appuser
 RUN chown -R appuser:appuser /app
