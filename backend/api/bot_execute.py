@@ -13,10 +13,18 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema
 from django.utils import timezone
 
 from account.models import BotAccount, Session
 from analytics.models import ActionLog
+from .openapi import (
+    ApiErrorSchema,
+    BotExecuteValidationErrorsSchema,
+    BotExecutionResponseSchema,
+    QueuedTaskResponseSchema,
+    TaskStatusResponseSchema,
+)
 
 # Add orchestrator to path
 project_root = Path(__file__).parent.parent.parent
@@ -67,6 +75,15 @@ class BotExecuteView(APIView):
     5. Returns result
     """
     
+    @extend_schema(
+        request=BotExecuteSerializer,
+        responses={
+            200: BotExecutionResponseSchema,
+            400: BotExecuteValidationErrorsSchema,
+            404: ApiErrorSchema,
+            500: ApiErrorSchema,
+        },
+    )
     def post(self, request):
         serializer = BotExecuteSerializer(data=request.data)
         
@@ -193,6 +210,14 @@ class BotExecuteAsyncView(APIView):
     Returns task_id for tracking.
     """
     
+    @extend_schema(
+        request=BotExecuteSerializer,
+        responses={
+            200: QueuedTaskResponseSchema,
+            400: BotExecuteValidationErrorsSchema,
+            501: ApiErrorSchema,
+        },
+    )
     def post(self, request):
         serializer = BotExecuteSerializer(data=request.data)
         
@@ -225,6 +250,9 @@ class BotExecuteAsyncView(APIView):
 class TaskStatusView(APIView):
     """Check status of async task."""
     
+    @extend_schema(
+        responses={200: TaskStatusResponseSchema, 501: ApiErrorSchema},
+    )
     def get(self, request, task_id):
         try:
             from celery.result import AsyncResult

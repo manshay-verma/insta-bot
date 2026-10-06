@@ -1,11 +1,17 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema, extend_schema_view
 from django.utils import timezone
 from django.db import models
 from datetime import timedelta
 
 from .models import Proxy, BotAccount, Session
+from api.openapi import (
+    ApiErrorSchema,
+    CookieUpdateRequestSchema,
+    StatusMessageResponseSchema,
+)
 from .serializers import (
     ProxySerializer,
     BotAccountSerializer,
@@ -80,6 +86,10 @@ class BotAccountViewSet(viewsets.ModelViewSet):
         serializer = AccountHealthSerializer(health_data)
         return Response(serializer.data)
 
+    @extend_schema(
+        request=CookieUpdateRequestSchema,
+        responses={200: StatusMessageResponseSchema, 400: ApiErrorSchema},
+    )
     @action(detail=True, methods=['post'])
     def update_cookies(self, request, pk=None):
         """Update session cookies for an account."""

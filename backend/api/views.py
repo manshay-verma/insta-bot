@@ -12,6 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema
 from django.utils import timezone
 from django.db import models
 from django.contrib.auth.models import User
@@ -20,11 +21,19 @@ from account.models import BotAccount, Session
 from analytics.models import DailyAnalytics, ActionLog
 from downloads.models import Download, MediaFile
 from .models import AppSetting, ExportJob
+from .openapi import (
+    ApiErrorSchema,
+    BotControlBulkRequestSchema,
+    BotControlRequestSchema,
+    BotControlResponseSchema,
+    BotStatusResponseSchema,
+)
 
 
 class BotStatusView(APIView):
     """Get current status of all bots."""
 
+    @extend_schema(responses=BotStatusResponseSchema)
     def get(self, request):
         accounts = BotAccount.objects.all()
         
@@ -57,6 +66,14 @@ class BotStatusView(APIView):
 class BotControlView(APIView):
     """Control bot operations (start/stop/pause)."""
 
+    @extend_schema(
+        request=BotControlRequestSchema,
+        responses={
+            200: BotControlResponseSchema,
+            400: ApiErrorSchema,
+            404: ApiErrorSchema,
+        },
+    )
     def post(self, request):
         action = request.data.get('action')
         account_id = request.data.get('account_id')
@@ -116,6 +133,10 @@ class BotControlBulkView(APIView):
     { "action": "start_all" | "stop_all" | "pause_all" | "resume_all" }
     """
 
+    @extend_schema(
+        request=BotControlBulkRequestSchema,
+        responses={200: BotControlResponseSchema, 400: ApiErrorSchema},
+    )
     def post(self, request):
         action = request.data.get('action')
         if not action:
