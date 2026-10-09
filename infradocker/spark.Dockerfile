@@ -6,6 +6,7 @@ ENV PYTHONPATH=/opt/bitnami/spark/python:/opt/bitnami/spark/python/lib/py4j-0.10
 USER root
 COPY requirements-spark.txt /app/
 RUN pip3 install --no-cache-dir -r /app/requirements-spark.txt
+COPY spark_jobs /app/spark_jobs
 WORKDIR /app
 USER 1001
 CMD ["/opt/bitnami/scripts/spark/run.sh"]

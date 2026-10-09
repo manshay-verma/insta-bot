@@ -145,8 +145,9 @@ class BotExecutionResponseSchema(serializers.Serializer):
 
 
 class QueuedTaskResponseSchema(serializers.Serializer):
-    task_id = serializers.CharField()
-    status = serializers.ChoiceField(choices=("queued",))
+    job_id = serializers.UUIDField()
+    task_id = serializers.CharField(allow_blank=True)
+    status = serializers.CharField()
     message = serializers.CharField()
 
 
@@ -159,9 +160,18 @@ class StatusMessageResponseSchema(serializers.Serializer):
 
 
 class TaskStatusResponseSchema(serializers.Serializer):
-    task_id = serializers.CharField()
+    job_id = serializers.UUIDField()
+    task_id = serializers.CharField(allow_blank=True)
+    account = serializers.IntegerField()
+    action = serializers.CharField()
     status = serializers.CharField()
-    result = serializers.JSONField(allow_null=True)
+    attempt_count = serializers.IntegerField()
+    result = serializers.JSONField(allow_null=True, required=False)
+    error = serializers.CharField(allow_blank=True)
+    cancel_requested = serializers.BooleanField()
+    created_at = serializers.DateTimeField()
+    started_at = serializers.DateTimeField(allow_null=True)
+    completed_at = serializers.DateTimeField(allow_null=True)
 
 
 class BulkQueueResponseSchema(serializers.Serializer):

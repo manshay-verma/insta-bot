@@ -1,10 +1,12 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiTypes, extend_schema, extend_schema_view
 from django.utils import timezone
 
+from account.models import BotAccount
 from .models import Download, MediaFile, DownloadQueue
 from .serializers import (
     DownloadSerializer,
@@ -19,6 +21,13 @@ from api.openapi import (
     BulkQueueResponseSchema,
     QueueProcessResponseSchema,
 )
+
+
+def _owned_accounts(request):
+    accounts = BotAccount.objects.all()
+    if not request.user.is_staff:
+        accounts = accounts.filter(owner=request.user)
+    return accounts
 
 
 @extend_schema_view(
@@ -46,6 +55,8 @@ class DownloadViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if not self.request.user.is_staff:
+            queryset = queryset.filter(account__owner=self.request.user)
         
         status_filter = self.request.query_params.get('status')
         if status_filter:
@@ -60,6 +71,20 @@ class DownloadViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(account_id=account_id)
         
         return queryset
+
+    def perform_create(self, serializer):
+        account = serializer.validated_data.get("account")
+        if not self.request.user.is_staff:
+            if account is None or account.owner_id != self.request.user.id:
+                raise PermissionDenied("Select one of your bot accounts.")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        account = serializer.validated_data.get("account", serializer.instance.account)
+        if not self.request.user.is_staff:
+            if account is None or account.owner_id != self.request.user.id:
+                raise PermissionDenied("Select one of your bot accounts.")
+        serializer.save()
 
     @extend_schema(
         request=None,
@@ -110,7 +135,16 @@ class DownloadViewSet(viewsets.ModelViewSet):
         account_id = serializer.validated_data.get('account_id')
         target_username = serializer.validated_data.get('target_username')
         priority = serializer.validated_data.get('priority', 2)
-        
+        account = None
+        if account_id is not None:
+            accounts = _owned_accounts(request)
+            try:
+                account = accounts.get(id=account_id)
+            except BotAccount.DoesNotExist as exc:
+                raise ValidationError({"account_id": "Bot account not found."}) from exc
+        elif not request.user.is_staff:
+            raise ValidationError({"account_id": "A bot account is required."})
+
         queued_items = []
         for url in urls:
             queue_item = DownloadQueue.objects.create(
@@ -118,7 +152,7 @@ class DownloadViewSet(viewsets.ModelViewSet):
                 media_type=media_type,
                 target_username=target_username,
                 priority=priority,
-                account_id=account_id,
+                account=account,
             )
             queued_items.append(queue_item.id)
         
@@ -146,12 +180,28 @@ class DownloadQueueViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if not self.request.user.is_staff:
+            queryset = queryset.filter(account__owner=self.request.user)
         
         priority = self.request.query_params.get('priority')
         if priority:
             queryset = queryset.filter(priority=priority)
         
         return queryset
+
+    def perform_create(self, serializer):
+        account = serializer.validated_data.get("account")
+        if not self.request.user.is_staff:
+            if account is None or account.owner_id != self.request.user.id:
+                raise PermissionDenied("Select one of your bot accounts.")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        account = serializer.validated_data.get("account", serializer.instance.account)
+        if not self.request.user.is_staff:
+            if account is None or account.owner_id != self.request.user.id:
+                raise PermissionDenied("Select one of your bot accounts.")
+        serializer.save()
 
     @extend_schema(
         request=None,
@@ -200,6 +250,8 @@ class MediaFileViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if not self.request.user.is_staff:
+            queryset = queryset.filter(download__account__owner=self.request.user)
         download_id = self.request.query_params.get('download')
         if download_id:
             queryset = queryset.filter(download_id=download_id)
@@ -219,6 +271,8 @@ class DownloadHistoryView(APIView):
     )
     def get(self, request):
         downloads = Download.objects.all()
+        if not request.user.is_staff:
+            downloads = downloads.filter(account__owner=request.user)
         
         # Date filtering
         start_date = request.query_params.get('start_date')

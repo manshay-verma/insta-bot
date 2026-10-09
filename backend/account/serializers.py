@@ -26,6 +26,24 @@ class BotAccountSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'trust_score', 'last_login', 'created_at', 'updated_at']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request and getattr(request, "auth", None) == "worker":
+            data["cookies_json"] = instance.cookies_json
+            data["proxy"] = (
+                {
+                    "protocol": instance.proxy.protocol,
+                    "host": instance.proxy.host,
+                    "port": instance.proxy.port,
+                    "username": instance.proxy.username,
+                    "password": instance.proxy.password,
+                }
+                if instance.proxy_id
+                else None
+            )
+        return data
+
 
 class BotAccountCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating bot accounts with password."""

@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 from django.utils import timezone
 
 
@@ -38,6 +39,13 @@ class BotAccount(models.Model):
     ]
 
     username = models.CharField(max_length=50, unique=True)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='bot_accounts',
+        null=True,
+        blank=True,
+    )
     password_encrypted = models.TextField(help_text="Encrypted password")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     trust_score = models.DecimalField(max_digits=3, decimal_places=2, default=0.50)

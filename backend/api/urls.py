@@ -15,7 +15,12 @@ from .views import (
     ExportDownloadView,
     ExportStatsView,
 )
-from .bot_execute import BotExecuteView, BotExecuteAsyncView, TaskStatusView
+from .bot_execute import (
+    BotExecuteView,
+    BotExecuteAsyncView,
+    TaskStatusView,
+    JobCancelView,
+)
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
@@ -37,4 +42,6 @@ urlpatterns = [
     path('bot/execute/', BotExecuteView.as_view(), name='bot-execute'),
     path('bot/execute/async/', BotExecuteAsyncView.as_view(), name='bot-execute-async'),
     path('bot/task/<str:task_id>/', TaskStatusView.as_view(), name='task-status'),
+    path('bot/jobs/<uuid:job_id>/', TaskStatusView.as_view(), name='automation-job-status'),
+    path('bot/jobs/<uuid:job_id>/cancel/', JobCancelView.as_view(), name='automation-job-cancel'),
 ]

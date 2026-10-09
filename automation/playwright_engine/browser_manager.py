@@ -18,7 +18,7 @@ class InstagramBrowser:
     """
 
     def __init__(self, headless: bool = True, proxy: Optional[Dict] = None, browser_type: str = "chromium", channel: Optional[str] = None):
-        self.headless = headless
+        self.headless = True
         self.proxy = proxy
         self.browser_type = browser_type
         self.channel = channel
@@ -367,22 +367,56 @@ class InstagramBrowser:
         #
         # Instagram markup changes frequently; rely on multiple selectors.
         username_selectors = [
+            'input[name="email"]',
             'input[name="username"]',
+            'input[autocomplete~="username"]',
+            'input[autocomplete="username"]',
             'input[aria-label*="username"]',
             'input[placeholder*="username"]',
             'input[aria-label*="email"]',
             'input[placeholder*="email"]',
         ]
         password_selectors = [
+            'input[name="pass"]',
             'input[name="password"]',
+            'input[type="password"]',
             'input[aria-label*="Password"]',
             'input[placeholder*="Password"]',
+        ]
+        submit_selectors = [
+            'input[type="submit"]',
+            'button[type="submit"]',
         ]
         login_form_selectors = [
             *username_selectors,
             *password_selectors,
             'form[action*="/accounts/login"]',
         ]
+
+        async def _first_visible(selectors: list[str], element_name: str):
+            for sel in selectors:
+                locator = self.page.locator(sel)
+                match_count = await locator.count()
+                for index in range(match_count):
+                    candidate = locator.nth(index)
+                    if await candidate.is_visible():
+                        logger.info(
+                            "Detected visible %s using selector %r (%d of %d matches)",
+                            element_name,
+                            sel,
+                            index + 1,
+                            match_count,
+                        )
+                        return sel, candidate
+                logger.debug(
+                    "Selector %r matched %d %s element(s), none visible",
+                    sel,
+                    match_count,
+                    element_name,
+                )
+            logger.warning("No visible %s found using selectors: %s", element_name, selectors)
+            return None, None
+
         try:
             await self.page.wait_for_selector(
                 ", ".join(login_form_selectors),
@@ -391,6 +425,29 @@ class InstagramBrowser:
             )
         except Exception as e:
             logger.error(f"Login page did not load properly: {e}")
+            for selector in login_form_selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    match_count = await locator.count()
+                    visible_count = sum(
+                        [
+                            await locator.nth(index).is_visible()
+                            for index in range(match_count)
+                        ]
+                    )
+                    logger.error(
+                        "Login selector diagnostics: %r matched %d element(s), "
+                        "%d visible",
+                        selector,
+                        match_count,
+                        visible_count,
+                    )
+                except Exception as diagnostic_error:
+                    logger.warning(
+                        "Could not inspect login selector %r: %s",
+                        selector,
+                        diagnostic_error,
+                    )
             # Save debug artifacts to help diagnose blocks / markup changes.
             try:
                 ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -406,53 +463,59 @@ class InstagramBrowser:
                     pass
             raise RuntimeError("Could not find login form. Check login_error.png for details.")
 
-        async def _first_visible(selectors: list[str]):
-            for sel in selectors:
-                try:
-                    el = await self.page.query_selector(sel)
-                    if el:
-                        # If it's in the DOM, try to interact; Playwright will error if not visible.
-                        return sel, el
-                except Exception:
-                    continue
-            return None, None
-
         # Fill credentials with human-like typing
-        username_sel, username_input = await _first_visible(username_selectors)
+        _, username_input = await _first_visible(
+            username_selectors,
+            "username input",
+        )
         if not username_input:
             raise RuntimeError("Could not find username input on login page.")
         await username_input.click()
         await asyncio.sleep(random.uniform(0.3, 0.7))
-        await self.page.fill(username_sel, username)
+        await username_input.fill(username)
         await asyncio.sleep(random.uniform(0.8, 1.5))
 
-        password_sel, password_input = await _first_visible(password_selectors)
+        _, password_input = await _first_visible(
+            password_selectors,
+            "password input",
+        )
         if not password_input:
             raise RuntimeError("Could not find password input on login page.")
         await password_input.click()
         await asyncio.sleep(random.uniform(0.3, 0.7))
-        await self.page.fill(password_sel, password)
+        await password_input.fill(password)
         await asyncio.sleep(random.uniform(0.5, 1.0))
-
-        # Click login button
-        login_button = await self.page.query_selector('button[type="submit"]')
-        if login_button:
-            await login_button.click()
-        else:
-            await self.page.click('button[type="submit"]')
+        logger.info("Submitting Instagram login form via password field")
+        try:
+            await password_input.press("Enter")
+        except Exception as e:
+            logger.exception("Failed to submit Instagram login form via password field")
+            raise RuntimeError("Could not submit Instagram login form.") from e
+        logger.info("Login form submitted")
+        logger.info("Waiting for Instagram login or verification state transition")
 
         # Wait for navigation or verification
         try:
             await self.page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
+            logger.info("Instagram login page reached network idle")
+        except Exception as e:
+            logger.debug("Network idle was not reached after login submission: %s", e)
 
         await asyncio.sleep(random.uniform(3, 5))
+        logger.info("Post-submit page URL: %s", self.page.url)
 
         # ── 2FA / verification detection ──────────────────────────────────
+        logger.info(
+            f"Calling _handle_2fa_verification(). Current URL: {self.page.url}"
+        )
+
         twofa_handled = await self._handle_2fa_verification(
             totp_secret=totp_secret,
             verification_callback=verification_callback,
+        )
+
+        logger.info(
+            f"_handle_2fa_verification() returned: {twofa_handled}"
         )
         if twofa_handled:
             logger.info("2FA/verification completed successfully.")
@@ -467,12 +530,6 @@ class InstagramBrowser:
         # Dismiss "Save Login Info" and other post-login popups
         await self._dismiss_popups()
 
-        # Save cookies if login successful
-        if cookie_path:
-            cookies = await self.context.cookies()
-            with open(cookie_path, 'w') as f:
-                json.dump(cookies, f)
-            logger.info(f"Saved session cookies to {cookie_path}")
         # Final validation: do not report success unless we can prove we're logged in.
         try:
             ok = await self.is_session_valid()
@@ -483,6 +540,14 @@ class InstagramBrowser:
         if not ok:
             logger.warning("Login completed but session is NOT valid (checkpoint/login likely).")
             return False
+
+        # Persist cookies only after validation, so a failed login cannot replace
+        # a previously valid session file.
+        if cookie_path:
+            cookies = await self.context.cookies()
+            with open(cookie_path, 'w') as f:
+                json.dump(cookies, f)
+            logger.info(f"Saved session cookies to {cookie_path}")
 
         return True
 
@@ -823,19 +888,29 @@ class InstagramBrowser:
                     return True
             
             # Check 3: Look for login page elements (means NOT logged in)
-            login_selectors = [
+            login_username_selectors = [
+                'input[name="email"]',
                 'input[name="username"]',
-                'input[name="password"]',
-                'button[type="submit"]',
+                'input[autocomplete~="username"]',
+                'input[autocomplete="username"]',
             ]
-            
-            login_elements_found = 0
-            for selector in login_selectors:
-                element = await self.page.query_selector(selector)
-                if element:
-                    login_elements_found += 1
-            
-            if login_elements_found >= 2:
+            login_password_selectors = [
+                'input[name="pass"]',
+                'input[name="password"]',
+                'input[type="password"]',
+            ]
+            username_field_found = False
+            for selector in login_username_selectors:
+                if await self.page.locator(selector).count():
+                    username_field_found = True
+                    break
+            password_field_found = False
+            for selector in login_password_selectors:
+                if await self.page.locator(selector).count():
+                    password_field_found = True
+                    break
+
+            if username_field_found and password_field_found:
                 logger.warning("Session invalid: Login form detected")
                 return False
             

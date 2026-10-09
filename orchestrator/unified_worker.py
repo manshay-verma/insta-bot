@@ -122,7 +122,11 @@ class UnifiedWorker:
         """Get or create an adapter, initializing if needed."""
         if adapter_type not in self._adapters:
             adapter = self._create_adapter(adapter_type)
-            await adapter.initialize()
+            if not await adapter.initialize():
+                await adapter.cleanup()
+                raise RuntimeError(
+                    f"{adapter_type.value} adapter failed to initialize."
+                )
             self._adapters[adapter_type] = adapter
         
         return self._adapters[adapter_type]
@@ -130,8 +134,11 @@ class UnifiedWorker:
     async def start_session(self) -> bool:
         """Start a backend session."""
         response = self.api_client.start_session(self.account_id)
-        if response.success:
+        if response.success and response.data:
             self.session_id = response.data.get("session_id")
+            if not self.session_id:
+                logger.error("Backend session response omitted session_id.")
+                return False
             self.callback = ActionCallback(
                 api_client=self.api_client,
                 account_id=self.account_id,
@@ -144,7 +151,7 @@ class UnifiedWorker:
     async def stop_session(self):
         """Stop the backend session."""
         if self.session_id:
-            self.api_client.stop_session(self.account_id)
+            self.api_client.stop_session(self.account_id, self.session_id)
             logger.info(f"Stopped session: {self.session_id}")
     
     async def execute(

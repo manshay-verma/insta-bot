@@ -52,43 +52,31 @@ Useful backend endpoints (local):
 - **API docs**: `http://localhost:8000/api/v1/docs/`
 - **JWT token**: `POST /api/v1/token/`
 - **Health check**: `GET /api/v1/health/`
-- **Execute bot (sync)**: `POST /api/v1/bot/execute/`
-- **Execute bot (async)**: `POST /api/v1/bot/execute/async/`
+- **Submit automation job**: `POST /api/v1/bot/execute/`
+- **Legacy submit alias**: `POST /api/v1/bot/execute/async/`
+- **Job status**: `GET /api/v1/bot/jobs/{job_id}/`
+- **Cancel job**: `POST /api/v1/bot/jobs/{job_id}/cancel/`
 - **Task status (async)**: `GET /api/v1/bot/task/<task_id>/`
 
 Routing is in `backend/config/urls.py` and `backend/api/urls.py`.
 
 ---
 
-### Backend → Automation (two modes)
+### Backend → Automation (Celery worker)
 
-#### Mode A: Sync execution (simple dev)
-
-When you call:
-
-- `POST /api/v1/bot/execute/`
-
-The backend imports the orchestrator and executes immediately inside the Django process:
-
-- `backend/api/bot_execute.py` calls `asyncio.run(...)`
-- It uses `orchestrator.UnifiedWorker` to start a session, execute the task, and clean up
-
-This is easiest for quick testing, but it ties up the API request while the action runs.
-
-#### Mode B: Async execution (recommended for long jobs)
-
-When you call:
+Both submit endpoints use the same asynchronous job path:
 
 - `POST /api/v1/bot/execute/async/`
 
-The backend enqueues a Celery job:
+The backend validates account ownership, stores a durable job record in PostgreSQL, and publishes it to Celery. The worker then executes the task using the automation dependencies and Playwright browsers installed in the worker image. Django does not import or run `UnifiedWorker` in the request process.
 
 - Celery broker: `CELERY_BROKER_URL` (Redis)
-- Worker container consumes the job and runs the automation
-- You get back a `task_id`, then poll:
-  - `GET /api/v1/bot/task/<task_id>/`
+- Worker API base URL: `INSTABOT_API_URL`
+- Internal worker API authentication: `INSTABOT_WORKER_TOKEN`
+- Poll durable status: `GET /api/v1/bot/jobs/{job_id}/`
+- Request cancellation: `POST /api/v1/bot/jobs/{job_id}/cancel/`
 
-This is better for long-running browser automation.
+The task-ID status route remains as a compatibility endpoint. Running-job cancellation is deferred until the current automation run has returned; queued jobs can be cancelled before execution.
 
 ---
 
@@ -132,4 +120,3 @@ That’s fine for a single-process dev setup. For multi-process/production you�
   - API returns `task_id`
   - Worker logs show task execution
   - Task status endpoint returns `SUCCESS`/`FAILURE`
-

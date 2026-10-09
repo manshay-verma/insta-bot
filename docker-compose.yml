@@ -11,14 +11,25 @@ services:
       - POSTGRES_PASSWORD=postgres
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   mongodb:
     image: mongo:6.0
+    profiles: ["optional-data"]
     ports:
       - "27017:27017"
     volumes:
@@ -30,7 +41,6 @@ services:
       dockerfile: infradocker/backend.Dockerfile
     volumes:
       - ./backend:/app/backend
-      - ./orchestrator:/app/orchestrator
       - ./artifacts:/app/artifacts
     working_dir: /app/backend
     ports:
@@ -38,6 +48,9 @@ services:
       - "127.0.0.1:5678:5678"
     environment:
       - DEBUG=True
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-local-development-only-key}
+      - ALLOWED_HOSTS=localhost,127.0.0.1,backend
+      - CORS_ALLOW_ALL_ORIGINS=True
       - DB_NAME=instabot_db
       - DB_USER=postgres
       - DB_PASSWORD=postgres
@@ -45,17 +58,29 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - PYTHONPATH=/app
+      - INSTABOT_WORKER_TOKEN=${INSTABOT_WORKER_TOKEN:-local-dev-worker-token}
 
     command: >
       python -m debugpy
       --listen 0.0.0.0:5678
-      --wait-for-client
       manage.py runserver 0.0.0.0:8000
       
     depends_on:
-      - db
-      - redis
-      - mongodb
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/health/', timeout=3)",
+        ]
+      interval: 500s
+      timeout: 5s
+      retries: 1
 
   worker:
     build:
@@ -73,10 +98,27 @@ services:
       - DB_PASSWORD=postgres
       - PYTHONPATH=/app
       - DJANGO_SETTINGS_MODULE=config.settings
-    command: celery -A config worker --loglevel=info
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-local-development-only-key}
+      - INSTABOT_API_URL=http://backend:8000/api/v1
+      - INSTABOT_WORKER_TOKEN=${INSTABOT_WORKER_TOKEN:-local-dev-worker-token}
+    ports:
+      - "5679:5679"
+
+    command: >
+      python -m debugpy
+      --listen 0.0.0.0:5679
+      -m celery
+      -A config
+      worker
+      --pool=solo
+      --loglevel=info
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
 
   frontend:
     image: node:20-alpine
@@ -91,9 +133,11 @@ services:
       - VITE_WS_URL=ws://localhost:8000/ws/updates/
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   spark-master:
+    profiles: ["analytics"]
     build:
       context: .
       dockerfile: infradocker/spark.Dockerfile
@@ -109,6 +153,7 @@ services:
       dockerfile: infradocker/node_service.Dockerfile
     ports:
       - "4000:4000"
+    profiles: ["optional-data"]
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/instabot
     depends_on:

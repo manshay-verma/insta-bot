@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from '../components/Sidebar';
 import Alert from '../components/Alert';
 import api from '../services/api';
@@ -25,8 +25,11 @@ const BotControls = () => {
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [selectedAction, setSelectedAction] = useState('like');
-  const [executionMode, setExecutionMode] = useState('sync'); // sync | async
+  const [activeJobId, setActiveJobId] = useState(null);
+  const [taskStatus, setTaskStatus] = useState(null);
   const [targetsInput, setTargetsInput] = useState('');
+  const submissionLock = useRef(false);
+  const submissionKey = useRef(null);
   const [logs, setLogs] = useState([
     { time: new Date().toLocaleTimeString(), type: 'info', msg: 'System initialized. Waiting for task configuration...' },
   ]);
@@ -69,6 +72,7 @@ const BotControls = () => {
   };
 
   const startBot = async () => {
+    if (submissionLock.current || activeJobId) return;
     if (!selectedAccountId) {
       addAlert('warning', 'Please select a bot account first.');
       return;
@@ -80,68 +84,55 @@ const BotControls = () => {
     }
 
     const targets = targetsInput.split(',').map(t => t.trim()).filter(Boolean);
-    
+    submissionLock.current = true;
     setIsRunning(true);
+    setTaskStatus('submitting');
     addLog('process', `Initiating mission: ${selectedAction.toUpperCase()} targets: ${targets.join(', ')}`);
 
     try {
-      if (executionMode === 'async') {
-        const queued = await api.post('/bot/execute/async/', {
-          account_id: parseInt(selectedAccountId),
-          action: selectedAction,
-          targets: targets
-        });
+      const submission = await api.post('/bot/execute/', {
+        account_id: parseInt(selectedAccountId),
+        action: selectedAction,
+        targets
+      }, {
+        headers: { 'Idempotency-Key': submissionKey.current || (submissionKey.current = crypto.randomUUID()) }
+      });
 
-        const taskId = queued.data.task_id;
-        addLog('process', `Queued async task: ${taskId}`);
+      const jobId = submission.data.job_id;
+      submissionKey.current = null;
+      setActiveJobId(jobId);
+      setTaskStatus(submission.data.status);
+      addLog('process', `Queued automation job: ${jobId}`);
 
-        const poll = async () => {
-          const statusRes = await api.get(`/bot/task/${taskId}/`);
-          const s = statusRes.data.status;
-          if (s === 'PENDING' || s === 'STARTED' || s === 'RETRY') {
-            return null;
+      while (true) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        try {
+          const statusRes = await api.get(`/bot/jobs/${jobId}/`);
+          const job = statusRes.data;
+          setTaskStatus(job.status);
+          if (['succeeded', 'failed', 'cancelled'].includes(job.status)) {
+            if (job.status === 'succeeded') {
+              addLog('success', `Job completed: processed ${job.result?.items_processed || 0}`);
+              addAlert('info', `Automation completed. Processed: ${job.result?.items_processed || 0}`);
+            } else if (job.status === 'cancelled') {
+              addLog(
+                'warning',
+                job.started_at
+                  ? 'Cancellation confirmed after the current automation job completed.'
+                  : 'Queued job cancelled before execution.'
+              );
+              addAlert('warning', 'Automation job cancelled.');
+            } else {
+              const errorMessage = job.error || job.result?.errors?.join(', ') || 'Automation failed.';
+              addLog('error', `Job failed: ${errorMessage}`);
+              addAlert('error', `Automation failed: ${errorMessage}`);
+            }
+            setActiveJobId(null);
+            setIsRunning(false);
+            break;
           }
-          return statusRes.data;
-        };
-
-        let done = null;
-        for (let i = 0; i < 120; i++) { // ~4 minutes max
-          await new Promise(r => setTimeout(r, 2000));
-          done = await poll();
-          if (done) break;
-        }
-
-        if (!done) {
-          addLog('error', 'Async task timed out while waiting for result.');
-          addAlert('warning', 'Task is still running. Check worker logs or poll status endpoint.');
-        } else if (done.status === 'SUCCESS') {
-          const result = done.result || {};
-          if (result.success) {
-            addLog('success', `Async Success: processed ${result.items_processed || 0}`);
-            addAlert('info', `Async task completed. Processed: ${result.items_processed || 0}`);
-          } else {
-            const errorMsg = result.errors?.join(', ') || 'Unknown execution error';
-            addLog('error', `Async Failed: ${errorMsg}`);
-            addAlert('error', `Async execution failed: ${errorMsg}`);
-          }
-        } else {
-          addLog('error', `Async task ended with status: ${done.status}`);
-          addAlert('error', `Async task ended with status: ${done.status}`);
-        }
-      } else {
-        const response = await api.post('/bot/execute/', {
-          account_id: parseInt(selectedAccountId),
-          action: selectedAction,
-          targets: targets
-        });
-
-        if (response.data.success) {
-          addLog('success', `Mission Successful: ${response.data.message || 'Complete'} (${response.data.items_processed} processed)`);
-          addAlert('info', `Successfully executed ${selectedAction} for ${response.data.items_processed} targets.`);
-        } else {
-          const errorMsg = response.data.errors?.join(', ') || 'Unknown execution error';
-          addLog('error', `Mission Failed: ${errorMsg}`);
-          addAlert('error', `Execution failed: ${errorMsg}`);
+        } catch (pollError) {
+          addLog('warning', 'Could not refresh job status; will retry.');
         }
       }
     } catch (err) {
@@ -149,14 +140,26 @@ const BotControls = () => {
       const errMsg = err.response?.data?.error || err.response?.data?.detail || err.message || 'Network error during execution.';
       addLog('error', `Fatal Error: ${errMsg}`);
       addAlert('error', `Execution blocked: ${errMsg}`);
-    } finally {
       setIsRunning(false);
+      setTaskStatus('failed');
+      if (err.response) submissionKey.current = null;
+    } finally {
+      submissionLock.current = false;
     }
   };
 
-  const stopBot = () => {
-    setIsRunning(false);
-    addLog('error', 'Bot paused: Manual interruption received.');
+  const stopBot = async () => {
+    if (!activeJobId) return;
+    try {
+      const response = await api.post(`/bot/jobs/${activeJobId}/cancel/`);
+      setTaskStatus(response.data.status);
+      addLog('warning', response.data.status === 'cancelled'
+        ? 'Queued job cancelled before execution.'
+        : 'Cancellation requested; the worker will finish the current job before confirming cancellation.');
+    } catch (err) {
+      const message = err.response?.data?.detail || err.message || 'Could not cancel the job.';
+      addAlert('error', message);
+    }
   };
 
   const dismissAlert = (id) => setAlerts(alerts.filter(a => a.id !== id));
@@ -174,11 +177,11 @@ const BotControls = () => {
             <button 
               className={`btn ${isRunning ? 'btn-danger' : 'btn-primary'}`} 
               onClick={isRunning ? stopBot : startBot}
-              disabled={isRunning}
-              style={{ gap: '8px', minWidth: '160px', opacity: isRunning ? 0.7 : 1 }}
+              disabled={taskStatus === 'submitting'}
+              style={{ gap: '8px', minWidth: '160px', opacity: taskStatus === 'submitting' ? 0.7 : 1 }}
             >
               {isRunning ? <Pause size={18} /> : <Play size={18} />}
-              {isRunning ? 'Running...' : 'Initiate Task'}
+              {taskStatus === 'cancelling' ? 'Cancelling...' : isRunning ? 'Cancel Job' : 'Initiate Task'}
             </button>
           </div>
         </header>
@@ -201,30 +204,6 @@ const BotControls = () => {
             </div>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-              {/* Execution Mode */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.875rem', marginBottom: '0.5rem', color: 'hsl(var(--muted-foreground))' }}>
-                  Execution Mode
-                </label>
-                <select
-                  value={executionMode}
-                  onChange={(e) => setExecutionMode(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.75rem 0.75rem',
-                    backgroundColor: 'rgba(255,255,255,0.05)',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: 'var(--radius)',
-                    color: 'white',
-                    outline: 'none',
-                    appearance: 'none',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="sync">Sync (wait for response)</option>
-                  <option value="async">Async (Celery worker + polling)</option>
-                </select>
-              </div>
               {/* Account Selection */}
               <div>
                 <label style={{ display: 'block', fontSize: '0.875rem', marginBottom: '0.5rem', color: 'hsl(var(--muted-foreground))' }}>Bot Account</label>

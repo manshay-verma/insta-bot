@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from django.utils import timezone
 from django.db import models
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAdminUser
 from datetime import timedelta
 
 from .models import Proxy, BotAccount, Session
@@ -25,6 +27,7 @@ class ProxyViewSet(viewsets.ModelViewSet):
     """ViewSet for Proxy CRUD operations."""
     queryset = Proxy.objects.all()
     serializer_class = ProxySerializer
+    permission_classes = [IsAdminUser]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -32,6 +35,16 @@ class ProxyViewSet(viewsets.ModelViewSet):
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() == 'true')
         return queryset
+
+
+def _is_worker_request(request):
+    return getattr(request, "auth", None) == "worker"
+
+
+def _user_accounts(request):
+    if _is_worker_request(request) or request.user.is_staff:
+        return BotAccount.objects.all()
+    return BotAccount.objects.filter(owner=request.user)
 
 
 class BotAccountViewSet(viewsets.ModelViewSet):
@@ -44,11 +57,14 @@ class BotAccountViewSet(viewsets.ModelViewSet):
         return BotAccountSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _user_accounts(self.request).select_related('proxy')
         status_filter = self.request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
 
     @action(detail=True, methods=['get'])
     def health(self, request, pk=None):
@@ -112,11 +128,31 @@ class SessionViewSet(viewsets.ModelViewSet):
     serializer_class = SessionSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        if _is_worker_request(self.request) or self.request.user.is_staff:
+            queryset = Session.objects.all()
+        else:
+            queryset = Session.objects.filter(account__owner=self.request.user)
         account_id = self.request.query_params.get('account')
         if account_id:
             queryset = queryset.filter(account_id=account_id)
         return queryset
+
+    def perform_create(self, serializer):
+        account = serializer.validated_data["account"]
+        if not _is_worker_request(self.request) and not self.request.user.is_staff:
+            if account.owner_id != self.request.user.id:
+                raise PermissionDenied("You do not have access to this bot account.")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        account = serializer.validated_data.get(
+            "account",
+            serializer.instance.account,
+        )
+        if not _is_worker_request(self.request) and not self.request.user.is_staff:
+            if account.owner_id != self.request.user.id:
+                raise PermissionDenied("You do not have access to this bot account.")
+        serializer.save()
 
     @action(detail=True, methods=['post'])
     def end(self, request, pk=None):

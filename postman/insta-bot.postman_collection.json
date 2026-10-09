@@ -1,0 +1,838 @@
+{
+  "info": {
+    "_postman_id": "9cb5a0b6-d667-4b10-9e35-318cfaebac71",
+    "name": "InstaBot API v1",
+    "description": "Postman collection for the InstaBot Django API. Set baseUrl to the API root (default: http://localhost:8000/api/v1). Register or obtain a JWT, then use the token requests to populate accessToken and refreshToken. Most endpoints require a bearer access token. Proxy management requires a staff account; automation job submission also requires the Celery/Redis worker services.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000/api/v1" },
+    { "key": "username", "value": "u1" },
+    { "key": "password", "value": "Password123" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "accountId", "value": "1" },
+    { "key": "proxyId", "value": "1" },
+    { "key": "sessionId", "value": "1" },
+    { "key": "analyticsId", "value": "1" },
+    { "key": "actionLogId", "value": "1" },
+    { "key": "behaviorId", "value": "1" },
+    { "key": "downloadId", "value": "1" },
+    { "key": "queueId", "value": "1" },
+    { "key": "mediaFileId", "value": "1" },
+    { "key": "jobId", "value": "00000000-0000-0000-0000-000000000000" },
+    { "key": "taskId", "value": "celery-task-id" },
+    { "key": "exportJobId", "value": "1" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{accessToken}}", "type": "string" }
+    ]
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register user",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"email\": \"u1@example.com\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/register/"
+          },
+          "response": []
+        },
+        {
+          "name": "Obtain JWT token pair",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.access) pm.collectionVariables.set('accessToken', body.access);",
+                  "  if (body.refresh) pm.collectionVariables.set('refreshToken', body.refresh);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/token/"
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh JWT token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.access) pm.collectionVariables.set('accessToken', body.access);",
+                  "  if (body.refresh) pm.collectionVariables.set('refreshToken', body.refresh);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/token/refresh/"
+          },
+          "response": []
+        },
+        {
+          "name": "Verify access token",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{accessToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/token/verify/"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Health and dashboard",
+      "item": [
+        {
+          "name": "Health check",
+          "request": { "method": "GET", "url": "{{baseUrl}}/health/" },
+          "response": []
+        },
+        {
+          "name": "System status",
+          "request": { "method": "GET", "url": "{{baseUrl}}/system/status/" },
+          "response": []
+        },
+        {
+          "name": "Bot status",
+          "request": { "method": "GET", "url": "{{baseUrl}}/bots/status/" },
+          "response": []
+        },
+        {
+          "name": "Dashboard analytics summary",
+          "request": { "method": "GET", "url": "{{baseUrl}}/analytics/dashboard/" },
+          "response": []
+        },
+        {
+          "name": "Account analytics stats",
+          "request": { "method": "GET", "url": "{{baseUrl}}/analytics/accounts/{{accountId}}/stats/" },
+          "response": []
+        },
+        {
+          "name": "Upcoming schedule",
+          "request": { "method": "GET", "url": "{{baseUrl}}/schedule/upcoming/" },
+          "response": []
+        },
+        {
+          "name": "Rate limits",
+          "request": { "method": "GET", "url": "{{baseUrl}}/rate-limits/?account_id={{accountId}}" },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Settings and bot controls",
+      "item": [
+        {
+          "name": "Get settings",
+          "request": { "method": "GET", "url": "{{baseUrl}}/settings/" },
+          "response": []
+        },
+        {
+          "name": "Update settings",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"theme\": \"dark\",\n  \"notifications\": { \"browser\": true, \"email\": false, \"webhooks\": true },\n  \"proxy_settings\": { \"globalProxy\": \"\", \"trustLevel\": \"medium\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/settings/"
+          },
+          "response": []
+        },
+        {
+          "name": "Control one bot",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"start\",\n  \"account_id\": {{accountId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/bots/control/"
+          },
+          "response": []
+        },
+        {
+          "name": "Bulk bot control",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"start_all\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/bots/control/bulk/"
+          },
+          "response": []
+        },
+        {
+          "name": "Clean up old sessions",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cutoff_days\": 30\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/maintenance/cleanup/"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Accounts, proxies and sessions",
+      "item": [
+        {
+          "name": "List accounts",
+          "request": { "method": "GET", "url": "{{baseUrl}}/accounts/" },
+          "response": []
+        },
+        {
+          "name": "Create account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.id) pm.collectionVariables.set('accountId', body.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"instagram_username\",\n  \"password\": \"replace-with-account-password\",\n  \"status\": \"active\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/accounts/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get account",
+          "request": { "method": "GET", "url": "{{baseUrl}}/accounts/{{accountId}}/" },
+          "response": []
+        },
+        {
+          "name": "Update account",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"paused\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/accounts/{{accountId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete account",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/accounts/{{accountId}}/" },
+          "response": []
+        },
+        {
+          "name": "Check account health",
+          "request": { "method": "GET", "url": "{{baseUrl}}/accounts/{{accountId}}/health/" },
+          "response": []
+        },
+        {
+          "name": "Update account cookies",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cookies\": []\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/accounts/{{accountId}}/update_cookies/"
+          },
+          "response": []
+        },
+        {
+          "name": "List proxies (staff only)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/proxies/" },
+          "response": []
+        },
+        {
+          "name": "Create proxy (staff only)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"host\": \"proxy.example.com\",\n  \"port\": 8080,\n  \"protocol\": \"http\",\n  \"username\": \"\",\n  \"country_code\": \"US\",\n  \"is_active\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/proxies/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get proxy (staff only)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/proxies/{{proxyId}}/" },
+          "response": []
+        },
+        {
+          "name": "Update proxy (staff only)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/proxies/{{proxyId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete proxy (staff only)",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/proxies/{{proxyId}}/" },
+          "response": []
+        },
+        {
+          "name": "List sessions",
+          "request": { "method": "GET", "url": "{{baseUrl}}/sessions/" },
+          "response": []
+        },
+        {
+          "name": "Create session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account\": {{accountId}},\n  \"actions_count\": 0,\n  \"status\": \"active\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/sessions/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get session",
+          "request": { "method": "GET", "url": "{{baseUrl}}/sessions/{{sessionId}}/" },
+          "response": []
+        },
+        {
+          "name": "Update session",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"completed\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/sessions/{{sessionId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "End session",
+          "request": { "method": "POST", "url": "{{baseUrl}}/sessions/{{sessionId}}/end/" },
+          "response": []
+        },
+        {
+          "name": "Delete session",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/sessions/{{sessionId}}/" },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "List daily analytics",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/analytics/daily/?account={{accountId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Create daily analytics",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"date\": \"2026-10-07\",\n  \"account\": {{accountId}},\n  \"follows_count\": 0,\n  \"unfollows_count\": 0,\n  \"likes_count\": 0,\n  \"comments_count\": 0,\n  \"downloads_count\": 0,\n  \"profiles_explored\": 0,\n  \"stories_viewed\": 0\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/analytics/daily/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get daily analytics record",
+          "request": { "method": "GET", "url": "{{baseUrl}}/analytics/daily/{{analyticsId}}/" },
+          "response": []
+        },
+        {
+          "name": "Update daily analytics record",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"likes_count\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/analytics/daily/{{analyticsId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete daily analytics record",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/analytics/daily/{{analyticsId}}/" },
+          "response": []
+        },
+        {
+          "name": "List action logs",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/analytics/actions/?account={{accountId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Create action log",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account\": {{accountId}},\n  \"action_type\": \"like\",\n  \"target_username\": \"example_user\",\n  \"success\": true,\n  \"metadata\": {}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/analytics/actions/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get action log",
+          "request": { "method": "GET", "url": "{{baseUrl}}/analytics/actions/{{actionLogId}}/" },
+          "response": []
+        },
+        {
+          "name": "Update action log",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"success\": false,\n  \"error_message\": \"Example failure\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/analytics/actions/{{actionLogId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete action log",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/analytics/actions/{{actionLogId}}/" },
+          "response": []
+        },
+        {
+          "name": "List user behaviors",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/analytics/behaviors/?account={{accountId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Create user behavior",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account\": {{accountId}},\n  \"behavior_type\": \"session_summary\",\n  \"data\": { \"actions_count\": 0 }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/analytics/behaviors/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get user behavior",
+          "request": { "method": "GET", "url": "{{baseUrl}}/analytics/behaviors/{{behaviorId}}/" },
+          "response": []
+        },
+        {
+          "name": "Update user behavior",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": { \"actions_count\": 1 }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/analytics/behaviors/{{behaviorId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete user behavior",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/analytics/behaviors/{{behaviorId}}/" },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Downloads",
+      "item": [
+        {
+          "name": "List downloads",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/downloads/downloads/?account={{accountId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Create download record",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_url\": \"https://www.instagram.com/p/example/\",\n  \"media_type\": \"image\",\n  \"account\": {{accountId}},\n  \"target_username\": \"example_user\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/downloads/downloads/"
+          },
+          "response": []
+        },
+        {
+          "name": "Queue multiple downloads",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"urls\": [\"https://www.instagram.com/p/example/\"],\n  \"media_type\": \"image\",\n  \"account_id\": {{accountId}},\n  \"target_username\": \"example_user\",\n  \"priority\": 2\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/downloads/downloads/bulk/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get download",
+          "request": { "method": "GET", "url": "{{baseUrl}}/downloads/downloads/{{downloadId}}/" },
+          "response": []
+        },
+        {
+          "name": "Get download status",
+          "request": { "method": "GET", "url": "{{baseUrl}}/downloads/downloads/{{downloadId}}/status/" },
+          "response": []
+        },
+        {
+          "name": "Update download record",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"cancelled\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/downloads/downloads/{{downloadId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete download record",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/downloads/downloads/{{downloadId}}/" },
+          "response": []
+        },
+        {
+          "name": "List download queue",
+          "request": { "method": "GET", "url": "{{baseUrl}}/downloads/queue/" },
+          "response": []
+        },
+        {
+          "name": "Add download to queue",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_url\": \"https://www.instagram.com/p/example/\",\n  \"media_type\": \"image\",\n  \"target_username\": \"example_user\",\n  \"priority\": 2,\n  \"account\": {{accountId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/downloads/queue/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get queued download",
+          "request": { "method": "GET", "url": "{{baseUrl}}/downloads/queue/{{queueId}}/" },
+          "response": []
+        },
+        {
+          "name": "Process queued download",
+          "request": { "method": "POST", "url": "{{baseUrl}}/downloads/queue/{{queueId}}/process/" },
+          "response": []
+        },
+        {
+          "name": "Update queued download",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priority\": 3\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/downloads/queue/{{queueId}}/"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete queued download",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/downloads/queue/{{queueId}}/" },
+          "response": []
+        },
+        {
+          "name": "List media files",
+          "request": { "method": "GET", "url": "{{baseUrl}}/downloads/files/" },
+          "response": []
+        },
+        {
+          "name": "Get media file",
+          "request": { "method": "GET", "url": "{{baseUrl}}/downloads/files/{{mediaFileId}}/" },
+          "response": []
+        },
+        {
+          "name": "Download history",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/downloads/history/?limit=50"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Exports",
+      "item": [
+        {
+          "name": "Create export",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.job_id) pm.collectionVariables.set('exportJobId', body.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"export_format\": \"json\",\n  \"data_types\": [\"analytics\", \"actions\", \"downloads\", \"media_files\", \"system_status\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/exports/"
+          },
+          "response": []
+        },
+        {
+          "name": "Export history",
+          "request": { "method": "GET", "url": "{{baseUrl}}/exports/history/" },
+          "response": []
+        },
+        {
+          "name": "Export stats",
+          "request": { "method": "GET", "url": "{{baseUrl}}/exports/stats/" },
+          "response": []
+        },
+        {
+          "name": "Download export",
+          "request": { "method": "GET", "url": "{{baseUrl}}/exports/{{exportJobId}}/download/" },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Automation jobs",
+      "description": "Submissions are asynchronous and require a reachable Celery broker and worker.",
+      "item": [
+        {
+          "name": "Submit automation job",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.job_id) pm.collectionVariables.set('jobId', body.job_id);",
+                  "  if (body.task_id) pm.collectionVariables.set('taskId', body.task_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "postman-{{accountId}}-{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": {{accountId}},\n  \"action\": \"scrape_profile\",\n  \"targets\": [\"example_user\"],\n  \"options\": {}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/bot/execute/"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit automation job (legacy async route)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "postman-{{accountId}}-{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": {{accountId}},\n  \"action\": \"scrape_profile\",\n  \"targets\": [\"example_user\"],\n  \"options\": {}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/bot/execute/async/"
+          },
+          "response": []
+        },
+        {
+          "name": "Get job status",
+          "request": { "method": "GET", "url": "{{baseUrl}}/bot/jobs/{{jobId}}/" },
+          "response": []
+        },
+        {
+          "name": "Cancel job",
+          "request": { "method": "POST", "url": "{{baseUrl}}/bot/jobs/{{jobId}}/cancel/" },
+          "response": []
+        },
+        {
+          "name": "Get task status (legacy lookup)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/bot/task/{{taskId}}/" },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "API documentation",
+      "item": [
+        {
+          "name": "OpenAPI schema",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/vnd.oai.openapi+json" }],
+            "url": "{{baseUrl}}/schema/"
+          },
+          "response": []
+        },
+        {
+          "name": "Swagger UI",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{baseUrl}}/docs/"
+          },
+          "response": []
+        },
+        {
+          "name": "ReDoc",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{baseUrl}}/redoc/"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

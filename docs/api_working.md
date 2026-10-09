@@ -176,9 +176,10 @@ Important: downloads are mounted at `/api/v1/downloads/` and the router inside u
 
 ## ⚡ Real Automation (depends on extra services/code)
 
-### Sync automation (depends on `orchestrator/` being importable)
+### Automation jobs (Celery worker execution)
 
 - **POST** `/api/v1/bot/execute/`
+- **POST** `/api/v1/bot/execute/async/` (legacy alias; same asynchronous path)
 
 Body:
 
@@ -191,22 +192,16 @@ Body:
 }
 ```
 
-If `orchestrator` is missing/not configured, the endpoint typically returns `success: false` with an error like **“Orchestrator not available”**.
+Both submit routes validate ownership and persist a job before queueing it. They return `job_id`, `task_id`, and a job status; they do not execute automation in the Django request process. An optional `Idempotency-Key` header makes safe client retries return the original job.
 
-### Async automation (depends on Celery + broker + worker)
+- **GET** `/api/v1/bot/jobs/{job_id}/` — durable job status
+- **POST** `/api/v1/bot/jobs/{job_id}/cancel/` — cancel queued work or request cancellation of a running job
+- **GET** `/api/v1/bot/task/{task_id}/` — legacy status lookup by Celery task ID
 
-- **POST** `/api/v1/bot/execute/async/`
-- **GET** `/api/v1/bot/task/{task_id}/`
-
-You need:
-
-- Celery configured in the backend
-- a broker/result backend (commonly Redis)
-- a running Celery worker
+Automation is executed only by the Celery worker, which owns the Playwright package and browser binaries. Django persists job state in PostgreSQL; Redis is the Celery broker. A running worker and reachable backend API are required. Cancellation of a running job is cooperative at job completion and does not interrupt an in-progress browser run.
 
 ---
 
 ## 🔌 WebSocket (real-time updates)
 
 - WebSocket URL: `ws://localhost:8000/ws/updates/`
-

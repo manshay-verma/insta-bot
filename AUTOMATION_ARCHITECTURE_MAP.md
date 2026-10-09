@@ -1,5 +1,7 @@
 # Automation Architecture Map
 
+> **Current execution contract:** This inventory began as a pre-refactor snapshot. The current implementation sends both `POST /api/v1/bot/execute/` and its legacy `/async/` alias through one asynchronous path. Django validates ownership, stores an `AutomationJob` in PostgreSQL, and publishes a Celery task; only the worker imports `orchestrator` and executes browser automation. Durable status and cancellation use `/api/v1/bot/jobs/{job_id}/` and `/cancel/`; the legacy task-status route resolves by Celery task ID. Playwright and browser binaries remain worker-only. Sections below that describe synchronous execution, direct imports from a request, `AsyncResult`-based status, or the old frontend polling behavior are historical and should not be treated as the current contract. See [docs/local_flow.md](./docs/local_flow.md) for the active flow.
+
 ## Scope and evidence rules
 
 This map describes the files present in this repository and their imports/calls. “Connected” means a source-level call path exists; it does not mean a live Instagram run was executed or that third-party services are configured. No runtime tests were run for this inspection. Paths are repository-relative.

@@ -1,270 +1,203 @@
-"""
-Bot Execution API
-
-Endpoints to trigger actual Instagram automation tasks.
-This is the critical link between Backend → Orchestrator → Automation.
-"""
-
-import asyncio
 import logging
-import sys
-from pathlib import Path
-from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import serializers
-from drf_spectacular.utils import extend_schema
-from django.utils import timezone
 
-from account.models import BotAccount, Session
-from analytics.models import ActionLog
+from django.utils import timezone
+from django.db import transaction
+from rest_framework import status
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+
+from account.models import BotAccount
 from .openapi import (
     ApiErrorSchema,
-    BotExecuteValidationErrorsSchema,
-    BotExecutionResponseSchema,
     QueuedTaskResponseSchema,
     TaskStatusResponseSchema,
 )
-
-# Add orchestrator to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+from .job_serializers import (
+    AutomationJobCreateSerializer,
+    AutomationJobStatusSerializer,
+)
+from .job_service import (
+    AccountJobAlreadyActive,
+    IdempotencyConflict,
+    QueueSubmissionError,
+    submit_automation_job,
+)
+from .models import AutomationJob
 
 logger = logging.getLogger(__name__)
 
 
-class BotExecuteSerializer(serializers.Serializer):
-    """Serializer for bot execution requests."""
-    account_id = serializers.IntegerField(required=True)
-    action = serializers.ChoiceField(
-        choices=[
-            ('like', 'Like Posts'),
-            ('follow', 'Follow Users'),
-            ('unfollow', 'Unfollow Users'),
-            ('scrape_profile', 'Scrape Profile'),
-            ('view_stories', 'View Stories'),
-            ('download', 'Download Media'),
-            ('comment', 'Comment on Post'),
-        ],
-        required=True
-    )
-    targets = serializers.ListField(
-        child=serializers.CharField(),
-        required=True,
-        help_text="List of usernames or URLs to act on"
-    )
-    options = serializers.DictField(required=False, default=dict)
-
-
 class BotExecuteView(APIView):
-    """
-    Execute Instagram automation tasks.
-    
-    POST /api/v1/bot/execute/
-    {
-        "account_id": 1,
-        "action": "like",
-        "targets": ["https://instagram.com/p/xyz"]
-    }
-    
-    This endpoint:
-    1. Validates the request
-    2. Checks account status
-    3. Triggers the orchestrator
-    4. Logs the action to database
-    5. Returns result
-    """
-    
-    @extend_schema(
-        request=BotExecuteSerializer,
-        responses={
-            200: BotExecutionResponseSchema,
-            400: BotExecuteValidationErrorsSchema,
-            404: ApiErrorSchema,
-            500: ApiErrorSchema,
-        },
-    )
-    def post(self, request):
-        serializer = BotExecuteSerializer(data=request.data)
-        
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        data = serializer.validated_data
-        account_id = data['account_id']
-        action = data['action']
-        targets = data['targets']
-        options = data.get('options', {})
-        
-        # Validate account
-        try:
-            account = BotAccount.objects.get(id=account_id)
-        except BotAccount.DoesNotExist:
-            return Response(
-                {'error': f'Account {account_id} not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        if account.status != 'active':
-            return Response(
-                {'error': f'Account is not active (status: {account.status})'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Execute automation
-        try:
-            result = self._execute_action(account, action, targets, options)
-            
-            # Log action to database
-            for target in targets[:len(result.get('processed', []))]:
-                ActionLog.objects.create(
-                    account=account,
-                    action_type=action,
-                    target_username=target if not target.startswith('http') else None,
-                    target_url=target if target.startswith('http') else None,
-                    success=result['success'],
-                    metadata=options
-                )
-            
-            return Response({
-                'success': result['success'],
-                'message': result.get('message', 'Action completed'),
-                'items_processed': result.get('items_processed', 0),
-                'errors': result.get('errors', []),
-            })
-            
-        except Exception as e:
-            logger.exception(f"Bot execution failed: {e}")
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    def _execute_action(self, account, action, targets, options):
-        """Execute action using orchestrator (sync wrapper)."""
-        try:
-            from orchestrator import UnifiedWorker, AdapterType, TaskType
-            
-            # Map action to TaskType
-            action_map = {
-                'like': TaskType.LIKE_POSTS,
-                'follow': TaskType.FOLLOW_USERS,
-                'unfollow': TaskType.UNFOLLOW_USERS,
-                'scrape_profile': TaskType.SCRAPE_PROFILE,
-                'view_stories': TaskType.VIEW_STORIES,
-                'download': TaskType.BULK_DOWNLOAD,
-                'comment': TaskType.COMMENT,
-            }
-            
-            task_type = action_map.get(action)
-            if not task_type:
-                return {'success': False, 'errors': [f'Unknown action: {action}']}
-            
-            # Determine adapter
-            adapter_type = AdapterType.PLAYWRIGHT
-            if action == 'download':
-                adapter_type = AdapterType.DOWNLOADER
-            
-            # Run async execution
-            result = asyncio.run(self._async_execute(
-                account.id, adapter_type, task_type, targets, options
-            ))
-            
-            return result
-            
-        except ImportError as e:
-            logger.error(f"Orchestrator import failed: {e}")
-            return {
-                'success': False,
-                'errors': [f'Orchestrator not available: {e}'],
-                'items_processed': 0
-            }
-    
-    async def _async_execute(self, account_id, adapter_type, task_type, targets, options):
-        """Async execution wrapper."""
-        from orchestrator import UnifiedWorker
-        
-        worker = UnifiedWorker(account_id=account_id)
-        
-        try:
-            await worker.start_session()
-            result = await worker.execute(adapter_type, task_type, targets, **options)
-            
-            return {
-                'success': result.success,
-                'items_processed': result.items_processed,
-                'errors': result.errors,
-                'processed': targets[:result.items_processed],
-            }
-        finally:
-            await worker.cleanup()
-            await worker.stop_session()
+    """Backward-compatible endpoint that submits an asynchronous automation job."""
 
+    permission_classes = [IsAuthenticated]
 
-class BotExecuteAsyncView(APIView):
-    """
-    Queue automation task for async execution (requires Celery).
-    
-    POST /api/v1/bot/execute/async/
-    
-    Returns task_id for tracking.
-    """
-    
     @extend_schema(
-        request=BotExecuteSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="Idempotency-Key",
+                type=str,
+                location=OpenApiParameter.HEADER,
+                required=False,
+            )
+        ],
+        request=AutomationJobCreateSerializer,
         responses={
+            202: QueuedTaskResponseSchema,
             200: QueuedTaskResponseSchema,
-            400: BotExecuteValidationErrorsSchema,
-            501: ApiErrorSchema,
+            400: ApiErrorSchema,
+            409: ApiErrorSchema,
+            503: ApiErrorSchema,
         },
     )
     def post(self, request):
-        serializer = BotExecuteSerializer(data=request.data)
-        
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
+        serializer = AutomationJobCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        
-        # Check if Celery is available
+
+        accounts = BotAccount.objects.filter(owner=request.user)
+        if request.user.is_staff:
+            accounts = BotAccount.objects.all()
         try:
-            from .tasks import execute_bot_task
-            task = execute_bot_task.delay(
-                account_id=data['account_id'],
-                action=data['action'],
-                targets=data['targets'],
-                options=data.get('options', {})
+            account = accounts.get(id=data["account_id"])
+        except BotAccount.DoesNotExist as exc:
+            raise NotFound("Bot account not found.") from exc
+
+        if account.status != "active":
+            raise ValidationError({"account_id": "Bot account is not active."})
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key and len(idempotency_key) > 128:
+            raise ValidationError(
+                {"Idempotency-Key": "Must be at most 128 characters."}
             )
-            return Response({
-                'task_id': task.id,
-                'status': 'queued',
-                'message': 'Task queued for execution'
-            })
-        except ImportError:
+
+        try:
+            submission = submit_automation_job(
+                user=request.user,
+                account=account,
+                action=data["action"],
+                targets=data["targets"],
+                options=data["options"],
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflict as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except AccountJobAlreadyActive:
             return Response(
-                {'error': 'Async execution not available. Celery not configured.'},
-                status=status.HTTP_501_NOT_IMPLEMENTED
+                {"detail": "An automation job is already active for this account."},
+                status=status.HTTP_409_CONFLICT,
             )
+        except QueueSubmissionError as exc:
+            logger.error(
+                "Celery queue rejected automation job",
+                extra={
+                    "account_id": account.id,
+                    "action": data["action"],
+                    "user_id": request.user.id,
+                    "error_type": type(exc.__cause__ or exc).__name__,
+                },
+            )
+            return Response(
+                {
+                    "status": AutomationJob.Status.FAILED,
+                    "error": "The automation queue is unavailable.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        job = submission.job
+        response_status = (
+            status.HTTP_202_ACCEPTED
+            if submission.created
+            else status.HTTP_200_OK
+        )
+        return Response(
+            {
+                "job_id": str(job.id),
+                "task_id": job.celery_task_id,
+                "status": job.status,
+                "message": "Automation job accepted."
+                if submission.created
+                else "Existing automation job returned.",
+            },
+            status=response_status,
+        )
+
+
+class BotExecuteAsyncView(BotExecuteView):
+    """Legacy async route; shares the same durable-job submission implementation."""
 
 
 class TaskStatusView(APIView):
-    """Check status of async task."""
-    
-    @extend_schema(
-        responses={200: TaskStatusResponseSchema, 501: ApiErrorSchema},
-    )
+    """Return durable application job state, not Celery AsyncResult state."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: TaskStatusResponseSchema, 404: ApiErrorSchema})
     def get(self, request, task_id):
         try:
-            from celery.result import AsyncResult
-            result = AsyncResult(task_id)
-            
-            return Response({
-                'task_id': task_id,
-                'status': result.status,
-                'result': result.result if result.ready() else None,
-            })
-        except ImportError:
-            return Response(
-                {'error': 'Celery not configured'},
-                status=status.HTTP_501_NOT_IMPLEMENTED
-            )
+            if request.resolver_match.url_name == "task-status":
+                job = AutomationJob.objects.get(
+                    celery_task_id=task_id,
+                    user=request.user,
+                )
+            else:
+                job = AutomationJob.objects.get(id=task_id, user=request.user)
+        except (AutomationJob.DoesNotExist, ValueError) as exc:
+            raise NotFound("Automation job not found.") from exc
+        return Response(AutomationJobStatusSerializer(job).data)
+
+
+class JobCancelView(APIView):
+    """Request safe cancellation of a queued or running job."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: TaskStatusResponseSchema, 404: ApiErrorSchema})
+    def post(self, request, job_id):
+        revoke_task_id = None
+        with transaction.atomic():
+            try:
+                job = AutomationJob.objects.select_for_update().get(
+                    id=job_id,
+                    user=request.user,
+                )
+            except (AutomationJob.DoesNotExist, ValueError) as exc:
+                raise NotFound("Automation job not found.") from exc
+
+            if job.status in {
+                AutomationJob.Status.QUEUED,
+                AutomationJob.Status.RETRYING,
+            }:
+                job.status = AutomationJob.Status.CANCELLED
+                job.completed_at = timezone.now()
+                job.cancel_requested = True
+                job.save(
+                    update_fields=[
+                        "status",
+                        "completed_at",
+                        "cancel_requested",
+                        "updated_at",
+                    ]
+                )
+                revoke_task_id = job.celery_task_id or None
+            elif job.status == AutomationJob.Status.RUNNING:
+                job.cancel_requested = True
+                job.status = AutomationJob.Status.CANCELLING
+                job.save(update_fields=["cancel_requested", "status", "updated_at"])
+
+        if revoke_task_id:
+            from celery import current_app
+
+            try:
+                current_app.control.revoke(revoke_task_id, terminate=False)
+            except Exception:
+                logger.warning(
+                    "Could not publish Celery revoke; worker will observe durable cancellation.",
+                    extra={"job_id": str(job.id), "task_id": revoke_task_id},
+                )
+        return Response(AutomationJobStatusSerializer(job).data)

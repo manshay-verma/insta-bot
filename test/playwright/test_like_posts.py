@@ -29,7 +29,7 @@ async def test_like_posts():
         print("\n=== Test 1: Like a Single Post by URL ===")
         
         # Use a test post URL - replace with a real post you want to test with
-        test_post_url = "https://www.instagram.com/p/DNce3PARMdB/"
+        test_post_url = "https://www.instagram.com/p/DdMJ8JZEzaK/"
         
         result = await ig.like_post(test_post_url)
         print(f"Result: {result}")

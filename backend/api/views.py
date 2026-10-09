@@ -5,16 +5,22 @@ import os
 import time
 import json
 import csv
+import logging
+import uuid
 from pathlib import Path
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema
 from django.utils import timezone
 from django.db import models
+from django.db import connection
+from django.conf import settings
+import redis
 from django.contrib.auth.models import User
 
 from account.models import BotAccount, Session
@@ -29,6 +35,8 @@ from .openapi import (
     BotStatusResponseSchema,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class BotStatusView(APIView):
     """Get current status of all bots."""
@@ -36,6 +44,8 @@ class BotStatusView(APIView):
     @extend_schema(responses=BotStatusResponseSchema)
     def get(self, request):
         accounts = BotAccount.objects.all()
+        if not request.user.is_staff:
+            accounts = accounts.filter(owner=request.user)
         
         status_summary = {
             'total': accounts.count(),
@@ -45,7 +55,10 @@ class BotStatusView(APIView):
             'checkpoint': accounts.filter(status='checkpoint').count(),
         }
         
-        active_sessions = Session.objects.filter(status='active').select_related('account')
+        active_sessions = Session.objects.filter(
+            status='active',
+            account__in=accounts,
+        ).select_related('account')
         running_bots = [
             {
                 'account_id': s.account.id,
@@ -85,7 +98,10 @@ class BotControlView(APIView):
             )
         
         try:
-            account = BotAccount.objects.get(id=account_id)
+            accounts = BotAccount.objects.all()
+            if getattr(request, "auth", None) != "worker" and not request.user.is_staff:
+                accounts = accounts.filter(owner=request.user)
+            account = accounts.get(id=account_id)
         except BotAccount.DoesNotExist:
             return Response(
                 {'error': 'Account not found'},
@@ -144,6 +160,8 @@ class BotControlBulkView(APIView):
 
         if action == 'start_all':
             accounts = BotAccount.objects.filter(status='active')
+            if not request.user.is_staff:
+                accounts = accounts.filter(owner=request.user)
             created = 0
             skipped = 0
             for acc in accounts:
@@ -156,15 +174,23 @@ class BotControlBulkView(APIView):
 
         if action == 'stop_all':
             active_sessions = Session.objects.filter(status='active')
+            if not request.user.is_staff:
+                active_sessions = active_sessions.filter(account__owner=request.user)
             count = active_sessions.update(status='completed', ended_at=timezone.now())
             return Response({'message': 'stop_all complete', 'stopped_sessions': count})
 
         if action == 'pause_all':
-            count = BotAccount.objects.exclude(status='banned').update(status='paused')
+            accounts = BotAccount.objects.exclude(status='banned')
+            if not request.user.is_staff:
+                accounts = accounts.filter(owner=request.user)
+            count = accounts.update(status='paused')
             return Response({'message': 'pause_all complete', 'updated_accounts': count})
 
         if action == 'resume_all':
-            count = BotAccount.objects.filter(status='paused').update(status='active')
+            accounts = BotAccount.objects.filter(status='paused')
+            if not request.user.is_staff:
+                accounts = accounts.filter(owner=request.user)
+            count = accounts.update(status='active')
             return Response({'message': 'resume_all complete', 'updated_accounts': count})
 
         return Response({'error': f'Unknown action: {action}'}, status=status.HTTP_400_BAD_REQUEST)
@@ -178,7 +204,10 @@ class SystemStatusView(APIView):
     def get(self, request):
         # We intentionally keep this lightweight (no extra dependencies).
         uptime_seconds = int(time.time() - self._boot_time)
-        active_sessions = Session.objects.filter(status='active').count()
+        active_sessions = Session.objects.filter(status='active')
+        if not request.user.is_staff:
+            active_sessions = active_sessions.filter(account__owner=request.user)
+        active_sessions = active_sessions.count()
 
         # CPU usage is not reliably available without psutil; return null.
         return Response({
@@ -211,7 +240,12 @@ class MaintenanceCleanupView(APIView):
         cutoff_days = int(request.data.get('cutoff_days', 30))
         cutoff = timezone.now() - timezone.timedelta(days=cutoff_days)
 
-        old_sessions = Session.objects.filter(status__in=['completed', 'failed', 'terminated'], ended_at__lt=cutoff)
+        old_sessions = Session.objects.filter(
+            status__in=['completed', 'failed', 'terminated'],
+            ended_at__lt=cutoff,
+        )
+        if not request.user.is_staff:
+            old_sessions = old_sessions.filter(account__owner=request.user)
         deleted_sessions = old_sessions.count()
         old_sessions.delete()
 
@@ -235,6 +269,7 @@ class RegisterView(APIView):
     POST /api/v1/register/
     { "username": "...", "email": "...", "password": "..." }
     """
+    permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
@@ -270,13 +305,14 @@ class SettingsView(APIView):
     """
 
     def get(self, request):
-        s = AppSetting.objects.first()
-        if not s:
-            s = AppSetting.objects.create(
-                theme="dark",
-                notifications={"browser": True, "email": False, "webhooks": True},
-                proxy_settings={"globalProxy": "", "trustLevel": "medium"},
-            )
+        s, _ = AppSetting.objects.get_or_create(
+            owner=request.user,
+            defaults={
+                "theme": "dark",
+                "notifications": {"browser": True, "email": False, "webhooks": True},
+                "proxy_settings": {"globalProxy": "", "trustLevel": "medium"},
+            },
+        )
         return Response({
             "theme": s.theme,
             "notifications": s.notifications or {},
@@ -289,13 +325,14 @@ class SettingsView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        s = AppSetting.objects.first()
-        if not s:
-            s = AppSetting.objects.create(
-                theme="dark",
-                notifications={},
-                proxy_settings={},
-            )
+        s, _ = AppSetting.objects.get_or_create(
+            owner=request.user,
+            defaults={
+                "theme": "dark",
+                "notifications": {},
+                "proxy_settings": {},
+            },
+        )
 
         if "theme" in data:
             s.theme = data["theme"]
@@ -342,14 +379,22 @@ class ExportStatsView(APIView):
     """Numbers for Export Center sidebar (fully dynamic)."""
 
     def get(self, request):
+        accounts = BotAccount.objects.all()
+        if not request.user.is_staff:
+            accounts = accounts.filter(owner=request.user)
+        sessions = Session.objects.filter(account__in=accounts)
+        action_logs = ActionLog.objects.filter(account__in=accounts)
+        analytics = DailyAnalytics.objects.filter(account__in=accounts)
+        downloads = Download.objects.filter(account__in=accounts)
+        media_files = MediaFile.objects.filter(download__in=downloads)
         return Response({
             "total_rows": {
-                "accounts": BotAccount.objects.count(),
-                "sessions": Session.objects.count(),
-                "action_logs": ActionLog.objects.count(),
-                "daily_analytics": DailyAnalytics.objects.count(),
-                "downloads": Download.objects.count(),
-                "media_files": MediaFile.objects.count(),
+                "accounts": accounts.count(),
+                "sessions": sessions.count(),
+                "action_logs": action_logs.count(),
+                "daily_analytics": analytics.count(),
+                "downloads": downloads.count(),
+                "media_files": media_files.count(),
             }
         })
 
@@ -367,28 +412,37 @@ class ExportCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         export_format = serializer.validated_data["export_format"]
         data_types = serializer.validated_data["data_types"]
+        accounts = BotAccount.objects.all()
+        if not request.user.is_staff:
+            accounts = accounts.filter(owner=request.user)
+        sessions = Session.objects.filter(account__in=accounts)
+        action_logs = ActionLog.objects.filter(account__in=accounts)
+        analytics = DailyAnalytics.objects.filter(account__in=accounts)
+        downloads = Download.objects.filter(account__in=accounts)
+        media_files = MediaFile.objects.filter(download__in=downloads)
 
         ts = timezone.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"export_{ts}"
-        out_dir = _exports_dir()
+        base_name = f"export_{request.user.id}_{ts}_{uuid.uuid4().hex[:8]}"
+        out_dir = _exports_dir() / str(request.user.id)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         def as_dicts(qs):
             return list(qs.values())
 
         payload = {}
         if "analytics" in data_types:
-            payload["daily_analytics"] = as_dicts(DailyAnalytics.objects.all()[:5000])
+            payload["daily_analytics"] = as_dicts(analytics[:5000])
         if "actions" in data_types:
-            payload["action_logs"] = as_dicts(ActionLog.objects.all()[:5000])
+            payload["action_logs"] = as_dicts(action_logs[:5000])
         if "downloads" in data_types:
-            payload["downloads"] = as_dicts(Download.objects.all()[:5000])
+            payload["downloads"] = as_dicts(downloads[:5000])
         if "media_files" in data_types:
-            payload["media_files"] = as_dicts(MediaFile.objects.all()[:5000])
+            payload["media_files"] = as_dicts(media_files[:5000])
         if "system_status" in data_types:
             # Reuse the same structure returned by SystemStatusView
             payload["system_status"] = {
                 "timestamp": timezone.now().isoformat(),
-                "active_sessions": Session.objects.filter(status="active").count(),
+                "active_sessions": sessions.filter(status="active").count(),
             }
 
         try:
@@ -401,7 +455,7 @@ class ExportCreateView(APIView):
                 # CSV exports only action logs (most tabular). Others can be JSON/ZIP.
                 filename = f"{base_name}_actions.csv"
                 path = out_dir / filename
-                rows = list(ActionLog.objects.all().values())[:5000]
+                rows = list(action_logs.values())[:5000]
                 with path.open("w", newline="", encoding="utf-8") as f:
                     if rows:
                         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -420,6 +474,7 @@ class ExportCreateView(APIView):
 
             size = path.stat().st_size if path.exists() else None
             job = ExportJob.objects.create(
+                owner=request.user,
                 export_format=export_format,
                 data_types=data_types,
                 filename=filename,
@@ -435,6 +490,7 @@ class ExportCreateView(APIView):
             }, status=status.HTTP_201_CREATED)
         except Exception as e:
             job = ExportJob.objects.create(
+                owner=request.user,
                 export_format=export_format,
                 data_types=data_types,
                 filename=f"{base_name}.error",
@@ -449,7 +505,7 @@ class ExportHistoryView(APIView):
     """List past exports."""
 
     def get(self, request):
-        qs = ExportJob.objects.all()[:100]
+        qs = ExportJob.objects.filter(owner=request.user)[:100]
         data = [{
             "id": j.id,
             "filename": j.filename,
@@ -469,7 +525,7 @@ class ExportDownloadView(APIView):
         from django.http import FileResponse, Http404
 
         try:
-            job = ExportJob.objects.get(id=job_id)
+            job = ExportJob.objects.get(id=job_id, owner=request.user)
         except ExportJob.DoesNotExist:
             raise Http404("Export not found")
 
@@ -486,12 +542,30 @@ class ExportDownloadView(APIView):
 class HealthCheckView(APIView):
     """API health check endpoint."""
 
+    permission_classes = [AllowAny]
+
     def get(self, request):
-        return Response({
-            'status': 'healthy',
-            'timestamp': timezone.now(),
-            'version': '1.0.0',
-        })
+        dependencies = {"database": False, "redis": False}
+        try:
+            connection.ensure_connection()
+            dependencies["database"] = True
+        except Exception:
+            logger.error("Backend database readiness check failed.")
+        try:
+            redis.Redis.from_url(settings.CELERY_BROKER_URL, socket_timeout=1).ping()
+            dependencies["redis"] = True
+        except Exception:
+            logger.error("Backend Redis readiness check failed.")
+        is_ready = all(dependencies.values())
+        return Response(
+            {
+                "status": "healthy" if is_ready else "not_ready",
+                "dependencies": dependencies,
+                "timestamp": timezone.now(),
+                "version": "1.0.0",
+            },
+            status=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
 
 class RateLimitStatusView(APIView):
@@ -510,7 +584,10 @@ class RateLimitStatusView(APIView):
         
         if account_id:
             try:
-                account = BotAccount.objects.get(id=account_id)
+                accounts = BotAccount.objects.all()
+                if not request.user.is_staff:
+                    accounts = accounts.filter(owner=request.user)
+                account = accounts.get(id=account_id)
                 # Get today's action counts
                 from analytics.models import ActionLog
                 today = timezone.now().date()

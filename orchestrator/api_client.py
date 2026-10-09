@@ -82,6 +82,9 @@ class InstaApiClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         })
+        worker_token = os.getenv("INSTABOT_WORKER_TOKEN")
+        if worker_token:
+            self.session.headers["X-Worker-Token"] = worker_token
     
     def _request(
         self,
@@ -183,8 +186,10 @@ class InstaApiClient:
             data={"action": BotAction.START.value, "account_id": account_id}
         )
     
-    def stop_session(self, account_id: int) -> ApiResponse:
-        """Stop all active sessions for an account."""
+    def stop_session(self, account_id: int, session_id: int = None) -> ApiResponse:
+        """Stop a specific session, or all sessions for legacy callers."""
+        if session_id is not None:
+            return self._request("POST", f"/sessions/{session_id}/end/")
         return self._request(
             "POST",
             "/bots/control/",

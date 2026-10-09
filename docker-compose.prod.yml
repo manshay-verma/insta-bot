@@ -1,74 +1,157 @@
-version: '3.8'
-
 services:
-  # MySQL (additional for learning)
-  mysql:
-    image: mysql:8.0
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
     environment:
-      - MYSQL_ROOT_PASSWORD=root
-      - MYSQL_DATABASE=instabot_db
+      POSTGRES_DB: ${DB_NAME:-instabot_db}
+      POSTGRES_USER: ${DB_USER:-instabot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
     volumes:
-      - mysql_data:/var/lib/mysql
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Node-services (supporting websockets/workers)
-  node-ws:
-    build:
-      context: ./node_service
-      dockerfile: Dockerfile
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD}"]
     environment:
-      - NODE_ENV=production
-      - MONGODB_URI=mongodb://mongodb:27017/instabot
-      - REDIS_URL=redis://redis:6379/2
-    ports:
-      - "4000:4000"
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    depends_on:
-      - mongodb
-      - redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Spark-master (orchestration)
-  spark-master:
+  backend:
     build:
       context: .
-      dockerfile: spark_jobs/Dockerfile
-    environment:
-      - SPARK_MODE=master
+      dockerfile: infradocker/backend.Dockerfile
+    restart: unless-stopped
+    environment: &django_environment
+      DEBUG: "False"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_ALL_ORIGINS: "False"
+      DB_NAME: ${DB_NAME:-instabot_db}
+      DB_USER: ${DB_USER:-instabot}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      DB_HOST: db
+      DB_PORT: "5432"
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL with Redis credentials}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND with Redis credentials}
+      INSTABOT_WORKER_TOKEN: ${INSTABOT_WORKER_TOKEN:?Set INSTABOT_WORKER_TOKEN}
+    command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
     ports:
-      - "7077:7077"
-      - "8080:8080"
-    volumes:
-      - ./spark_jobs:/app/spark_jobs
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/health/', timeout=3)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
 
-  # Frontend Nginx (Production)
+  worker:
+    build:
+      context: .
+      dockerfile: infradocker/automation.Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *django_environment
+      PYTHONPATH: /app
+      DJANGO_SETTINGS_MODULE: config.settings
+      INSTABOT_API_URL: http://backend:8000/api/v1
+    command: ["celery", "-A", "config", "worker", "--loglevel=info"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    mem_limit: 4g
+    cpus: 2.0
+
   frontend-prod:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile.prod
+      context: .
+      dockerfile: infradocker/frontend.Dockerfile
+      args:
+        VITE_API_URL: ${PUBLIC_API_URL:?Set PUBLIC_API_URL}
+        VITE_WS_URL: ${PUBLIC_WS_URL:?Set PUBLIC_WS_URL}
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
-      - backend
-    restart: always
+      backend:
+        condition: service_healthy
 
-# Reuse existing volumes from dev compose or define here
+  mongodb:
+    image: mongo:6.0
+    profiles: ["optional-data"]
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?Set MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD}
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  node-ws:
+    build:
+      context: .
+      dockerfile: infradocker/node_service.Dockerfile
+    profiles: ["optional-data"]
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI}
+    ports:
+      - "4000:4000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: infradocker/spark.Dockerfile
+    profiles: ["analytics"]
+    environment:
+      SPARK_MODE: master
+      MONGODB_URI: ${MONGODB_URI:-}
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    restart: unless-stopped
+
 volumes:
-  mysql_data:
-  
-networks:
-  default:
-    name: instabot_prod_network
-    driver: bridge
+  postgres_data:
+  redis_data:
+  mongodb_data:
