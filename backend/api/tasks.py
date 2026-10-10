@@ -1,12 +1,17 @@
 import asyncio
 import logging
 import sys
+from datetime import timedelta
 
 from celery import shared_task
+from django.conf import settings
 from django.db import close_old_connections, transaction
 from django.utils import timezone
+from asgiref.sync import sync_to_async
+from redis import asyncio as redis_async
 
 from .models import AutomationJob
+from .verification import OTP_TIMEOUT_SECONDS, otp_redis_key
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,7 @@ def _set_job_failure(job_id, message, result=None):
             AutomationJob.Status.QUEUED,
             AutomationJob.Status.RUNNING,
             AutomationJob.Status.RETRYING,
+            AutomationJob.Status.AWAITING_OTP,
             AutomationJob.Status.CANCELLING,
         ),
     ).update(
@@ -35,8 +41,94 @@ def _set_job_failure(job_id, message, result=None):
         error=message,
         result=result,
         completed_at=failed_at,
+        verification_expires_at=None,
         updated_at=failed_at,
     )
+
+
+async def _wait_for_job_otp(job_id):
+    expires_at = timezone.now() + timedelta(seconds=OTP_TIMEOUT_SECONDS)
+    marked_pending = await sync_to_async(
+        lambda: AutomationJob.objects.filter(
+            id=job_id,
+            status=AutomationJob.Status.RUNNING,
+            cancel_requested=False,
+        ).update(
+            status=AutomationJob.Status.AWAITING_OTP,
+            verification_expires_at=expires_at,
+            updated_at=timezone.now(),
+        ),
+        thread_sensitive=True,
+    )()
+    if not marked_pending:
+        raise RuntimeError("The automation job is no longer accepting verification codes.")
+
+    redis_client = redis_async.from_url(
+        settings.CELERY_BROKER_URL,
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
+    key = otp_redis_key(job_id)
+    try:
+        while timezone.now() < expires_at:
+            code = await redis_client.getdel(key)
+            if code is not None:
+                resumed = await sync_to_async(
+                    lambda: AutomationJob.objects.filter(
+                        id=job_id,
+                        status=AutomationJob.Status.AWAITING_OTP,
+                        cancel_requested=False,
+                    ).update(
+                        status=AutomationJob.Status.RUNNING,
+                        verification_expires_at=None,
+                        updated_at=timezone.now(),
+                    ),
+                    thread_sensitive=True,
+                )()
+                if not resumed:
+                    raise RuntimeError(
+                        "The automation job was cancelled before verification resumed."
+                    )
+                await redis_client.delete(key)
+                return code
+
+            job_state = await sync_to_async(
+                lambda: AutomationJob.objects.filter(id=job_id)
+                .values("status", "cancel_requested")
+                .first(),
+                thread_sensitive=True,
+            )()
+            if (
+                job_state is None
+                or job_state["cancel_requested"]
+                or job_state["status"] != AutomationJob.Status.AWAITING_OTP
+            ):
+                raise RuntimeError(
+                    "The automation job stopped waiting for verification."
+                )
+            await asyncio.sleep(0.5)
+
+        failed_at = timezone.now()
+        await sync_to_async(
+            lambda: AutomationJob.objects.filter(
+                id=job_id,
+                status=AutomationJob.Status.AWAITING_OTP,
+            ).update(
+                status=AutomationJob.Status.FAILED,
+                error="The verification code was not submitted before the challenge expired.",
+                completed_at=failed_at,
+                verification_expires_at=None,
+                updated_at=failed_at,
+            ),
+            thread_sensitive=True,
+        )()
+        raise TimeoutError("The verification code submission timed out.")
+    finally:
+        try:
+            await redis_client.delete(key)
+        finally:
+            await redis_client.aclose()
 
 
 @shared_task(bind=True, name="api.execute_automation_job")
@@ -48,6 +140,24 @@ def execute_automation_job(self, job_id):
         with transaction.atomic():
             job = AutomationJob.objects.select_for_update().get(id=job_id)
             if job.status == AutomationJob.Status.CANCELLED:
+                return {"job_id": str(job.id), "status": job.status}
+            if job.status == AutomationJob.Status.AWAITING_OTP:
+                job.status = AutomationJob.Status.FAILED
+                job.error = (
+                    "The worker restarted while verification was pending; "
+                    "submit a new automation job."
+                )
+                job.completed_at = timezone.now()
+                job.verification_expires_at = None
+                job.save(
+                    update_fields=[
+                        "status",
+                        "error",
+                        "completed_at",
+                        "verification_expires_at",
+                        "updated_at",
+                    ]
+                )
                 return {"job_id": str(job.id), "status": job.status}
             if job.cancel_requested:
                 job.status = AutomationJob.Status.CANCELLED
@@ -95,14 +205,21 @@ def execute_automation_job(self, job_id):
 
         async def run_job():
             worker = UnifiedWorker(account_id=job.account_id)
+
+            async def verification_callback(_prompt):
+                return await _wait_for_job_otp(job.id)
+
             try:
                 if not await worker.start_session():
                     raise RuntimeError("Could not start the backend automation session.")
+                execution_options = dict(job.options)
+                if adapter_type == AdapterType.PLAYWRIGHT:
+                    execution_options["verification_callback"] = verification_callback
                 return await worker.execute(
                     adapter_type,
                     task_type,
                     job.targets,
-                    **job.options,
+                    **execution_options,
                 )
             finally:
                 try:
@@ -126,12 +243,14 @@ def execute_automation_job(self, job_id):
             current.result = summary
             current.error = "" if result.success else "; ".join(result.errors or [])
             current.completed_at = finished_at
+            current.verification_expires_at = None
             current.save(
                 update_fields=[
                     "status",
                     "result",
                     "error",
                     "completed_at",
+                    "verification_expires_at",
                     "updated_at",
                 ]
             )
@@ -148,8 +267,11 @@ def execute_automation_job(self, job_id):
         )
         return {"job_id": str(job.id), "status": current.status, **summary}
     except Exception as exc:
+        if job is not None:
+            job.refresh_from_db()
         if (
             job is not None
+            and job.status == AutomationJob.Status.RUNNING
             and job.action == "scrape_profile"
             and self.request.retries < 2
         ):

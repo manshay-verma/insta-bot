@@ -1,6 +1,7 @@
 import logging
 
 from django.utils import timezone
+from django.conf import settings
 from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -8,16 +9,21 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import OpenApiParameter, extend_schema
+from redis import Redis
+from redis.exceptions import RedisError
 
 from account.models import BotAccount
 from .openapi import (
     ApiErrorSchema,
     QueuedTaskResponseSchema,
     TaskStatusResponseSchema,
+    VerificationCodeSubmitRequestSchema,
+    VerificationCodeSubmitResponseSchema,
 )
 from .job_serializers import (
     AutomationJobCreateSerializer,
     AutomationJobStatusSerializer,
+    VerificationCodeSubmitSerializer,
 )
 from .job_service import (
     AccountJobAlreadyActive,
@@ -26,8 +32,33 @@ from .job_service import (
     submit_automation_job,
 )
 from .models import AutomationJob
+from .verification import otp_redis_key
 
 logger = logging.getLogger(__name__)
+
+
+def _expire_pending_verification(job):
+    if (
+        job.status == AutomationJob.Status.AWAITING_OTP
+        and (
+            job.verification_expires_at is None
+            or job.verification_expires_at <= timezone.now()
+        )
+    ):
+        expired_at = timezone.now()
+        AutomationJob.objects.filter(
+            id=job.id,
+            status=AutomationJob.Status.AWAITING_OTP,
+        ).update(
+            status=AutomationJob.Status.FAILED,
+            error="The verification challenge expired before a code was submitted.",
+            completed_at=expired_at,
+            verification_expires_at=None,
+            updated_at=expired_at,
+        )
+        job.refresh_from_db()
+        return True
+    return False
 
 
 class BotExecuteView(APIView):
@@ -149,7 +180,106 @@ class TaskStatusView(APIView):
                 job = AutomationJob.objects.get(id=task_id, user=request.user)
         except (AutomationJob.DoesNotExist, ValueError) as exc:
             raise NotFound("Automation job not found.") from exc
+        _expire_pending_verification(job)
         return Response(AutomationJobStatusSerializer(job).data)
+
+
+class VerificationCodeSubmitView(APIView):
+    """Receive one user-supplied OTP for an owned pending automation job."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=VerificationCodeSubmitRequestSchema,
+        responses={
+            202: VerificationCodeSubmitResponseSchema,
+            400: ApiErrorSchema,
+            404: ApiErrorSchema,
+            409: ApiErrorSchema,
+            503: ApiErrorSchema,
+        },
+    )
+    def post(self, request, job_id):
+        serializer = VerificationCodeSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        redis_client = Redis.from_url(
+            settings.CELERY_BROKER_URL,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        try:
+            with transaction.atomic():
+                try:
+                    job = AutomationJob.objects.select_for_update().get(
+                        id=job_id,
+                        user=request.user,
+                    )
+                except (AutomationJob.DoesNotExist, ValueError) as exc:
+                    raise NotFound("Automation job not found.") from exc
+
+                if _expire_pending_verification(job):
+                    response = Response(
+                        {"detail": "The verification challenge has expired."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                elif (
+                    job.status != AutomationJob.Status.AWAITING_OTP
+                    or job.cancel_requested
+                ):
+                    response = Response(
+                        {"detail": "This job is not waiting for a verification code."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                else:
+                    try:
+                        accepted = redis_client.set(
+                            otp_redis_key(job.id),
+                            serializer.validated_data["code"],
+                            ex=max(
+                                1,
+                                int(
+                                    (
+                                        job.verification_expires_at
+                                        - timezone.now()
+                                    ).total_seconds()
+                                ),
+                            ),
+                            nx=True,
+                        )
+                    except RedisError:
+                        logger.exception(
+                            "Could not deliver verification code to automation worker",
+                            extra={"job_id": str(job.id)},
+                        )
+                        response = Response(
+                            {
+                                "detail": (
+                                    "Verification delivery is temporarily unavailable."
+                                )
+                            },
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        )
+                    else:
+                        response = (
+                            Response(
+                                {"status": "received"},
+                                status=status.HTTP_202_ACCEPTED,
+                            )
+                            if accepted
+                            else Response(
+                                {
+                                    "detail": (
+                                        "A verification code is already awaiting "
+                                        "processing."
+                                    )
+                                },
+                                status=status.HTTP_409_CONFLICT,
+                            )
+                        )
+        finally:
+            redis_client.close()
+        return response
 
 
 class JobCancelView(APIView):
@@ -189,6 +319,18 @@ class JobCancelView(APIView):
                 job.cancel_requested = True
                 job.status = AutomationJob.Status.CANCELLING
                 job.save(update_fields=["cancel_requested", "status", "updated_at"])
+            elif job.status == AutomationJob.Status.AWAITING_OTP:
+                job.cancel_requested = True
+                job.status = AutomationJob.Status.CANCELLING
+                job.verification_expires_at = None
+                job.save(
+                    update_fields=[
+                        "cancel_requested",
+                        "status",
+                        "verification_expires_at",
+                        "updated_at",
+                    ]
+                )
 
         if revoke_task_id:
             from celery import current_app

@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from account.models import BotAccount
@@ -167,3 +169,111 @@ class AutomationJobAPITests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertFalse(AutomationJob.objects.exists())
+
+    @patch("api.bot_execute.Redis.from_url")
+    def test_owner_can_submit_code_to_pending_verification_job(self, redis_from_url):
+        redis_client = redis_from_url.return_value
+        redis_client.set.return_value = True
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.AWAITING_OTP,
+            verification_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        response = self.client.post(
+            f"/api/v1/bot/jobs/{job.id}/verification/",
+            {"code": "123456"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data, {"status": "received"})
+        redis_client.set.assert_called_once()
+        self.assertEqual(redis_client.set.call_args.args[1], "123456")
+        redis_client.close.assert_called_once()
+
+    @patch("api.bot_execute.Redis.from_url")
+    def test_code_submission_is_rejected_for_non_pending_job(self, redis_from_url):
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.RUNNING,
+        )
+
+        response = self.client.post(
+            f"/api/v1/bot/jobs/{job.id}/verification/",
+            {"code": "123456"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        redis_from_url.assert_not_called()
+
+    @patch("api.bot_execute.Redis.from_url")
+    def test_expired_verification_job_is_failed_without_delivering_code(
+        self,
+        redis_from_url,
+    ):
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.AWAITING_OTP,
+            verification_expires_at=timezone.now() - timedelta(seconds=1),
+        )
+
+        response = self.client.post(
+            f"/api/v1/bot/jobs/{job.id}/verification/",
+            {"code": "123456"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        job.refresh_from_db()
+        self.assertEqual(job.status, AutomationJob.Status.FAILED)
+        self.assertIsNone(job.verification_expires_at)
+        redis_from_url.assert_not_called()
+
+    def test_code_submission_requires_an_authenticatable_numeric_code(self):
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.AWAITING_OTP,
+            verification_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        response = self.client.post(
+            f"/api/v1/bot/jobs/{job.id}/verification/",
+            {"code": "abc123"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_only_job_owner_can_submit_verification_code(self):
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.AWAITING_OTP,
+            verification_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        other_client = APIClient()
+        other_client.force_authenticate(user=self.other_user)
+
+        response = other_client.post(
+            f"/api/v1/bot/jobs/{job.id}/verification/",
+            {"code": "123456"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)

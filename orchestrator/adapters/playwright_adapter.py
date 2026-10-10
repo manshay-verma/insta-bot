@@ -180,9 +180,10 @@ class PlaywrightAdapter(BaseAdapter):
                 ok = await self.browser.login(
                     username=username,
                     password="",
-                    cookie_path=cookie_path
+                    cookie_path=cookie_path,
+                    verification_callback=kwargs.get("verification_callback"),
                 )
-                if ok and await self.browser.is_session_valid():
+                if ok:
                     self._logged_in = True
                     # Sync fresh cookies back (cookies may get rotated by IG)
                     try:
@@ -229,9 +230,10 @@ class PlaywrightAdapter(BaseAdapter):
                 username=username,
                 password=password,
                 cookie_path=cookie_path or str(cookie_sync.cookie_file_path),
+                verification_callback=kwargs.get("verification_callback"),
             )
 
-            if ok and await self.browser.is_session_valid():
+            if ok:
                 self._logged_in = True
                 try:
                     fresh = await self.browser.get_cookies()

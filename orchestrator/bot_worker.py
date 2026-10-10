@@ -209,13 +209,13 @@ class BotWorker:
             self.cookie_sync.export_to_file(cookies)
             
             try:
-                await self.browser.login(
+                login_success = await self.browser.login(
                     username=username,
                     password="",  # Not needed with cookies
                     cookie_path=cookie_path
                 )
                 
-                if await self.browser.is_session_valid():
+                if login_success:
                     logger.info(f"Logged in via cookies: @{username}")
                     return True
                     

@@ -24,7 +24,15 @@ class AutomationJobCreateSerializer(serializers.Serializer):
     options = serializers.DictField(required=False, default=dict)
 
     def validate_options(self, options):
-        blocked_keys = {"password", "ig_password", "cookie", "cookies", "token", "secret"}
+        blocked_keys = {
+            "password",
+            "ig_password",
+            "cookie",
+            "cookies",
+            "token",
+            "secret",
+            "verification_callback",
+        }
 
         def contains_sensitive_key(value):
             if isinstance(value, dict):
@@ -44,6 +52,15 @@ class AutomationJobCreateSerializer(serializers.Serializer):
         return options
 
 
+class VerificationCodeSubmitSerializer(serializers.Serializer):
+    code = serializers.RegexField(
+        regex=r"^\d{4,10}$",
+        max_length=10,
+        trim_whitespace=True,
+        write_only=True,
+    )
+
+
 class AutomationJobStatusSerializer(serializers.ModelSerializer):
     job_id = serializers.UUIDField(source="id", read_only=True)
     task_id = serializers.CharField(source="celery_task_id", read_only=True)
@@ -60,6 +77,7 @@ class AutomationJobStatusSerializer(serializers.ModelSerializer):
             "result",
             "error",
             "cancel_requested",
+            "verification_expires_at",
             "created_at",
             "started_at",
             "completed_at",

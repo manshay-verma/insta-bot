@@ -68,6 +68,7 @@ class AutomationJob(models.Model):
         QUEUED = "queued", "Queued"
         RUNNING = "running", "Running"
         RETRYING = "retrying", "Retrying"
+        AWAITING_OTP = "awaiting_otp", "Awaiting verification code"
         SUCCEEDED = "succeeded", "Succeeded"
         FAILED = "failed", "Failed"
         CANCELLING = "cancelling", "Cancelling"
@@ -88,7 +89,7 @@ class AutomationJob(models.Model):
     targets = models.JSONField(default=list)
     options = models.JSONField(default=dict, blank=True)
     status = models.CharField(
-        max_length=16,
+        max_length=24,
         choices=Status.choices,
         default=Status.QUEUED,
         db_index=True,
@@ -99,6 +100,7 @@ class AutomationJob(models.Model):
     result = models.JSONField(null=True, blank=True)
     error = models.TextField(blank=True)
     cancel_requested = models.BooleanField(default=False)
+    verification_expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -119,6 +121,7 @@ class AutomationJob(models.Model):
                         "queued",
                         "running",
                         "retrying",
+                        "awaiting_otp",
                         "cancelling",
                     ]
                 ),

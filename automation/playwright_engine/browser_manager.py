@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime
 from typing import Optional, Dict
+from urllib.parse import urlsplit
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -352,8 +353,12 @@ class InstagramBrowser:
             ]
             for selector in logged_in_selectors:
                 if await self.page.query_selector(selector):
-                    logger.info(f"Successfully logged in via cookies for user: {username}")
-                    return True
+                    if await self.is_session_valid():
+                        logger.info(
+                            f"Successfully logged in via cookies for user: {username}"
+                        )
+                        return True
+                    break
 
             logger.warning("Cookie session expired. Performing fresh login.")
 
@@ -502,11 +507,12 @@ class InstagramBrowser:
             logger.debug("Network idle was not reached after login submission: %s", e)
 
         await asyncio.sleep(random.uniform(3, 5))
-        logger.info("Post-submit page URL: %s", self.page.url)
+        logger.info("Post-submit page path: %s", urlsplit(self.page.url).path)
 
         # ── 2FA / verification detection ──────────────────────────────────
         logger.info(
-            f"Calling _handle_2fa_verification(). Current URL: {self.page.url}"
+            "Calling _handle_2fa_verification(). Current path: %s",
+            urlsplit(self.page.url).path,
         )
 
         twofa_handled = await self._handle_2fa_verification(
@@ -519,15 +525,9 @@ class InstagramBrowser:
         )
         if twofa_handled:
             logger.info("2FA/verification completed successfully.")
-            # Wait for post-2FA navigation
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-            await asyncio.sleep(random.uniform(3, 5))
         # ─────────────────────────────────────────────────────────────────
 
-        # Dismiss "Save Login Info" and other post-login popups
+        # Dismiss other post-login popups
         await self._dismiss_popups()
 
         # Final validation: do not report success unless we can prove we're logged in.
@@ -560,12 +560,12 @@ class InstagramBrowser:
         """
         Detect and handle Instagram 2FA / verification prompts after login.
 
-        Supported challenge types:
+        Supported OTP challenge types:
         - TOTP authenticator app (automatic if ``totp_secret`` is supplied)
         - SMS one-time code
         - Email one-time code
-        - "Suspicious login / unusual location" confirmation
-        - "We need to make sure your account is secure" checkpoint
+
+        Non-OTP security checkpoints are reported as unsupported.
 
         Args:
             totp_secret: Base-32 TOTP secret for automatic code generation.
@@ -575,14 +575,16 @@ class InstagramBrowser:
             max_attempts: Maximum submission retries on wrong code.
 
         Returns:
-            bool: True if a challenge was detected *and* resolved, False if
-                  no challenge was present (normal login flow).
+            bool: True if an OTP challenge was resolved and the session was
+                  validated, False if no challenge was present.
 
         Raises:
             RuntimeError: If the challenge cannot be resolved after
                           ``max_attempts`` tries.
         """
         current_url = self.page.url
+        current_path = urlsplit(current_url).path.lower()
+        is_email_otp_page = "/auth_platform/codeentry/" in current_path
 
         # ── Detect whether any verification screen is showing ─────────────
         # 1. URL-based detection
@@ -591,24 +593,44 @@ class InstagramBrowser:
             "/two_factor",
             "/security/",
             "/accounts/login/two_factor",
+            "/auth_platform/codeentry/",
         ]
-        url_triggered = any(p in current_url for p in challenge_urls)
+        url_triggered = any(p in current_path for p in challenge_urls)
 
         # 2. Page-content-based detection (covers all form variants)
         verification_input_selectors = [
+            'input[name="email"]',
             'input[name="verificationCode"]',
             'input[name="security_code"]',
             'input[name="sms_code"]',
             'input[aria-label*="ode"]',           # "Enter code" / "Verification code"
             'input[aria-label*="erification"]',
             'input[placeholder*="ode"]',
+            'input[type="tel"]',
+            'input[type="number"]',
+            'input[inputmode="numeric"]',
         ]
-        verification_input = None
-        for sel in verification_input_selectors:
-            el = await self.page.query_selector(sel)
-            if el and await el.is_visible():
-                verification_input = el
-                break
+
+        async def _find_visible_code_input():
+            for selector in verification_input_selectors:
+                if (
+                    selector == 'input[name="email"]'
+                    and "/auth_platform/codeentry/"
+                    not in urlsplit(self.page.url).path.lower()
+                ):
+                    continue
+                locator = self.page.locator(selector)
+                for index in range(await locator.count()):
+                    candidate = locator.nth(index)
+                    if await candidate.is_visible() and await candidate.is_enabled():
+                        logger.info(
+                            "Found verification input using selector: %s",
+                            selector,
+                        )
+                        return candidate
+            return None
+
+        verification_input = await _find_visible_code_input()
 
         # 3. Text-based detection for suspicious-login checkpoint
         page_text_lower = (await self.page.inner_text("body")).lower()
@@ -634,14 +656,16 @@ class InstagramBrowser:
             return False
 
         logger.info(
-            f"2FA/verification challenge detected. URL: {current_url} | "
+            f"2FA/verification challenge detected. Path: {current_path} | "
             f"Input found: {verification_input is not None} | "
             f"Text triggered: {text_triggered}"
         )
         await self.page.screenshot(path="2fa_challenge.png")
 
         # ── Determine challenge type for user-facing prompt ───────────────
-        if "two_factor" in current_url or "authentication code" in page_text_lower:
+        if is_email_otp_page:
+            challenge_type = "Email"
+        elif "two_factor" in current_path or "authentication code" in page_text_lower:
             challenge_type = "TOTP Authenticator App"
         elif "sms" in page_text_lower or "text message" in page_text_lower or "phone" in page_text_lower:
             challenge_type = "SMS"
@@ -652,6 +676,12 @@ class InstagramBrowser:
 
         logger.info(f"Challenge type identified as: {challenge_type}")
 
+        if challenge_type == "Security":
+            raise RuntimeError(
+                "Instagram presented a security checkpoint that this OTP handler "
+                "cannot resolve automatically."
+            )
+
         # ── Handle "Send Code" buttons if code hasn't been dispatched yet ─
         send_code_selectors = [
             'button:has-text("Send Code")',
@@ -660,29 +690,55 @@ class InstagramBrowser:
             'button:has-text("Get Code")',
             'button:has-text("Send an email")',
         ]
-        for sel in send_code_selectors:
-            btn = await self.page.query_selector(sel)
-            if btn and await btn.is_visible():
-                logger.info(f"Clicking '{sel}' to request verification code.")
-                await btn.click()
-                await asyncio.sleep(random.uniform(2, 4))
-                break
+        code_already_sent = (
+            verification_input is not None
+            or is_email_otp_page
+            or any(
+                indicator in page_text_lower
+                for indicator in (
+                    "Enter the code that we sent",
+                    "sent a code",
+                    "code sent",
+                    "code we sent",
+                    "code was sent",
+                    "code has been sent",
+                    "we sent",
+                    "we've sent",
+                    "we have sent",
+                    "sent the code",
+                    "check your email",
+                    "check your phone",
+                )
+            )
+        )
+        if not code_already_sent:
+            for sel in send_code_selectors:
+                btn = await self.page.query_selector(sel)
+                if btn and await btn.is_visible() and await btn.is_enabled():
+                    logger.info(f"Clicking '{sel}' to request verification code.")
+                    await btn.click()
+                    break
 
         # ── Locate the code input field (re-query after possible redirect) ─
         if verification_input is None:
-            for sel in verification_input_selectors:
-                el = await self.page.query_selector(sel)
-                if el and await el.is_visible():
-                    verification_input = el
-                    break
-
-        if verification_input is None:
-            # Last-resort: any visible numeric/short input
-            for sel in ['input[type="tel"]', 'input[type="number"]', 'input[inputmode="numeric"]']:
-                el = await self.page.query_selector(sel)
-                if el and await el.is_visible():
-                    verification_input = el
-                    break
+            wait_selectors = [
+                selector
+                for selector in verification_input_selectors
+                if (
+                    selector != 'input[name="email"]'
+                    or "/auth_platform/codeentry/"
+                    in urlsplit(self.page.url).path.lower()
+                )
+            ]
+            try:
+                await self.page.wait_for_selector(
+                    ", ".join(wait_selectors),
+                    state="visible",
+                    timeout=10000,
+                )
+            except Exception as e:
+                logger.debug("Verification input did not appear after request: %s", e)
+            verification_input = await _find_visible_code_input()
 
         if verification_input is None:
             logger.error("Could not locate verification code input field.")
@@ -716,14 +772,27 @@ class InstagramBrowser:
                 )
                 if verification_callback:
                     import inspect
-                    if inspect.iscoroutinefunction(verification_callback):
-                        code = await verification_callback(prompt)
+                    callback_call = getattr(verification_callback, "__call__", None)
+                    is_async_callback = (
+                        inspect.iscoroutinefunction(verification_callback)
+                        or inspect.iscoroutinefunction(callback_call)
+                    )
+                    if is_async_callback:
+                        callback_result = verification_callback(prompt)
                     else:
-                        code = verification_callback(prompt)
+                        callback_result = await asyncio.to_thread(
+                            verification_callback,
+                            prompt,
+                        )
+                    code = (
+                        await callback_result
+                        if inspect.isawaitable(callback_result)
+                        else callback_result
+                    )
                 else:
-                    # Interactive fallback — will block until user types a code
+                    # Keep interactive use from blocking the event loop.
                     import builtins
-                    code = builtins.input(prompt)
+                    code = await asyncio.to_thread(builtins.input, prompt)
 
             code = str(code).strip()
             if not code:
@@ -732,37 +801,91 @@ class InstagramBrowser:
 
             logger.info(f"Submitting verification code (attempt {attempt}).")
 
-            # Clear and type the code with human-like delays
-            await verification_input.click()
-            await asyncio.sleep(random.uniform(0.2, 0.5))
-            await verification_input.triple_click()   # select all existing text
-            await verification_input.type(code, delay=random.uniform(80, 150))
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+            # Re-query the field because the challenge page may have re-rendered.
+            verification_input = await _find_visible_code_input()
 
-            # Submit: look for a dedicated button, fall back to Enter key
-            submit_selectors = [
-                'button:has-text("Confirm")',
-                'button:has-text("Submit")',
-                'button:has-text("Verify")',
-                'button:has-text("Log In")',
-                'button[type="submit"]',
-            ]
-            submitted = False
-            for sel in submit_selectors:
-                btn = await self.page.query_selector(sel)
-                if btn and await btn.is_visible():
-                    await btn.click()
-                    submitted = True
-                    break
-            if not submitted:
-                await self.page.keyboard.press("Enter")
+            if verification_input is None:
+                logger.error("Verification code input disappeared before submission.")
+                raise RuntimeError("2FA challenge code input is no longer available.")
 
-            # Wait for page reaction
             try:
-                await self.page.wait_for_load_state("networkidle", timeout=12000)
-            except Exception:
-                pass
-            await asyncio.sleep(random.uniform(3, 5))
+                await verification_input.fill(code, timeout=10000)
+            except Exception as e:
+                logger.warning(
+                    "Could not enter verification code on attempt %s: %s",
+                    attempt,
+                    e,
+                )
+                if attempt == max_attempts:
+                    raise RuntimeError(
+                        "Could not enter the verification code after "
+                        f"{max_attempts} attempts."
+                    ) from e
+                continue
+            # Submit only after the code is filled; prefer Instagram's
+            # accessible custom button, which need not be a native <button>.
+            submission_attempted = False
+            continue_button = self.page.get_by_role(
+                "button",
+                name="Continue",
+                exact=True,
+            )
+            try:
+                submit_control = None
+                for index in range(await continue_button.count()):
+                    candidate = continue_button.nth(index)
+                    if await candidate.is_visible() and await candidate.is_enabled():
+                        submit_control = candidate
+                        break
+                if submit_control is None:
+                    if challenge_type != "Email":
+                        for selector in (
+                            'button:has-text("Confirm")',
+                            'button:has-text("Submit")',
+                            'button:has-text("Verify")',
+                            'button:has-text("Log In")',
+                            'button[type="submit"]',
+                        ):
+                            button = self.page.locator(selector).first
+                            if (
+                                await button.count()
+                                and await button.is_visible()
+                                and await button.is_enabled()
+                            ):
+                                submit_control = button
+                                break
+                if submit_control is not None:
+                    submission_attempted = True
+                    await submit_control.click(timeout=10000)
+                elif challenge_type != "Email":
+                    submission_attempted = True
+                    await verification_input.press("Enter", timeout=10000)
+                else:
+                    raise RuntimeError(
+                        "The visible, enabled Continue control was not found "
+                        "after entering the verification code."
+                    )
+            except Exception as e:
+                if not submission_attempted:
+                    raise RuntimeError(
+                        "Could not find a usable Continue control for the "
+                        "verification code."
+                    ) from e
+                logger.warning(
+                    "Verification submit action did not confirm completion; checking the "
+                    "page state without resubmitting the code: %s",
+                    e,
+                )
+
+            # Wait for the challenge field to disappear rather than waiting on
+            # network idle, which may never occur for Instagram's SPA updates.
+            try:
+                await verification_input.wait_for(state="hidden", timeout=10000)
+            except Exception as e:
+                logger.debug(
+                    "Verification input did not disappear after submission: %s",
+                    e,
+                )
 
             # ── Verify success ────────────────────────────────────────────
             new_url = self.page.url
@@ -778,20 +901,19 @@ class InstagramBrowser:
             ]
             has_error = any(e in new_text for e in error_indicators)
 
-            still_challenged = any(p in new_url for p in challenge_urls) or (
-                any(t in new_text for t in text_indicators) and
-                not any(s in new_url for s in ["/", "/accounts/"])
-            )
+            new_path = urlsplit(new_url).path.lower()
+            still_challenged = any(p in new_path for p in challenge_urls)
+            if not still_challenged:
+                still_challenged = await _find_visible_code_input() is not None
 
             if has_error:
                 logger.warning(f"Incorrect verification code on attempt {attempt}.")
                 if attempt < max_attempts:
-                    # Re-query input (page may have reset it)
-                    for sel in verification_input_selectors:
-                        el = await self.page.query_selector(sel)
-                        if el and await el.is_visible():
-                            verification_input = el
-                            break
+                    if not still_challenged:
+                        raise RuntimeError(
+                            "Instagram reported an invalid verification code, "
+                            "but the code entry challenge is no longer available."
+                        )
                     continue
                 else:
                     raise RuntimeError(
@@ -800,19 +922,86 @@ class InstagramBrowser:
                     )
 
             if not still_challenged:
-                logger.info("2FA verification succeeded — proceeding to Instagram home.")
-                return True
+                popup_handled = await self._handle_save_login_info()
+                try:
+                    if await self.is_session_valid():
+                        logger.info(
+                            "2FA verification succeeded — authenticated session validated."
+                        )
+                        return True
+                except Exception as e:
+                    logger.warning("Session validation after 2FA failed: %s", e)
+                if popup_handled is False:
+                    logger.warning(
+                        "Save your login info popup could not be handled; "
+                        "the session was not validated."
+                    )
+                raise RuntimeError(
+                    "The verification challenge cleared, but the authenticated "
+                    "session could not be validated."
+                )
 
-            # Unknown state — take screenshot and try again
+            # The challenge remains without an explicit invalid-code message.
+            # Treat the result as ambiguous rather than submitting another code.
             await self.page.screenshot(path=f"2fa_attempt_{attempt}.png")
             logger.warning(
-                f"Unclear state after 2FA attempt {attempt}. "
-                f"Current URL: {new_url}. Screenshot saved."
+                "Verification submission result is ambiguous; the challenge "
+                "remains and the code will not be resubmitted. URL: %s",
+                new_path,
+            )
+            raise RuntimeError(
+                "Instagram did not confirm the verification result. "
+                "The same code was not submitted again."
             )
 
         raise RuntimeError(
             f"Could not complete 2FA verification after {max_attempts} attempts."
         )
+
+    async def _handle_save_login_info(self) -> Optional[bool]:
+        """Handle Instagram's optional Save your login info prompt."""
+        prompt = self.page.get_by_text("Save your login info", exact=False)
+        try:
+            prompt_visible = False
+            for index in range(await prompt.count()):
+                if await prompt.nth(index).is_visible():
+                    prompt_visible = True
+                    break
+        except Exception as e:
+            logger.warning("Could not inspect the Save your login info prompt: %s", e)
+            return False
+
+        if not prompt_visible:
+            return None
+
+        save_button = self.page.get_by_role("button", name="Save Info", exact=True)
+        try:
+            button = None
+            for index in range(await save_button.count()):
+                candidate = save_button.nth(index)
+                if await candidate.is_visible() and await candidate.is_enabled():
+                    button = candidate
+                    break
+        except Exception as e:
+            logger.warning("Could not locate the Save Info button: %s", e)
+            return False
+
+        if button is None:
+            logger.warning(
+                "Save your login info prompt is visible, but the Save Info "
+                "button is unavailable."
+            )
+            return False
+
+        try:
+            await button.click(timeout=5000)
+            await prompt.first.wait_for(state="hidden", timeout=5000)
+        except Exception as e:
+            logger.warning("Could not complete the Save Info prompt: %s", e)
+            return False
+
+        logger.info("Saved Instagram login information.")
+        return True
 
     async def _dismiss_popups(self):
         """
@@ -824,11 +1013,8 @@ class InstagramBrowser:
             'button:has-text("Accept All")',
             'button:has-text("Allow essential and optional cookies")',
             'button:has-text("Allow all cookies")',
-            # "Save Login Info" popup
-            'button:has-text("Save Info")',
             'button:has-text("Not Now")',
             # Notifications popup  
-            'button:has-text("Not Now")',
             'button:has-text("Turn On")',
             # "Add to Home Screen" popup
             'button:has-text("Cancel")',
@@ -866,7 +1052,16 @@ class InstagramBrowser:
             
             # Check 1: URL should not be login page
             current_url = self.page.url
-            if "/accounts/login" in current_url or "/challenge" in current_url:
+            if any(
+                challenge_path in current_url
+                for challenge_path in (
+                    "/accounts/login",
+                    "/challenge",
+                    "/two_factor",
+                    "/auth_platform/codeentry/",
+                    "/security/",
+                )
+            ):
                 logger.warning("Session invalid: Redirected to login/challenge page")
                 return False
             
@@ -878,12 +1073,11 @@ class InstagramBrowser:
                 'svg[aria-label="New post"]',       # New post icon (alternate)
                 'svg[aria-label="New Post"]',       # New Post icon
                 'a[href*="/direct/inbox/"]',        # DM link
-                'span[role="link"]',                # Profile link span
             ]
             
             for selector in logged_in_selectors:
                 element = await self.page.query_selector(selector)
-                if element:
+                if element and await element.is_visible():
                     logger.info(f"Session valid: Found indicator '{selector}'")
                     return True
             
@@ -901,13 +1095,21 @@ class InstagramBrowser:
             ]
             username_field_found = False
             for selector in login_username_selectors:
-                if await self.page.locator(selector).count():
-                    username_field_found = True
+                locator = self.page.locator(selector)
+                for index in range(await locator.count()):
+                    if await locator.nth(index).is_visible():
+                        username_field_found = True
+                        break
+                if username_field_found:
                     break
             password_field_found = False
             for selector in login_password_selectors:
-                if await self.page.locator(selector).count():
-                    password_field_found = True
+                locator = self.page.locator(selector)
+                for index in range(await locator.count()):
+                    if await locator.nth(index).is_visible():
+                        password_field_found = True
+                        break
+                if password_field_found:
                     break
 
             if username_field_found and password_field_found:

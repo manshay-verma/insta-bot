@@ -790,6 +790,21 @@
           "response": []
         },
         {
+          "name": "Submit OTP verification code",
+          "description": "Submit the code received by the account owner when the job status is awaiting_otp. The jobId is captured from Submit automation job.",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"123456\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/bot/jobs/{{jobId}}/verification/"
+          },
+          "response": []
+        },
+        {
           "name": "Cancel job",
           "request": { "method": "POST", "url": "{{baseUrl}}/bot/jobs/{{jobId}}/cancel/" },
           "response": []

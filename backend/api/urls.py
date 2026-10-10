@@ -20,6 +20,7 @@ from .bot_execute import (
     BotExecuteAsyncView,
     TaskStatusView,
     JobCancelView,
+    VerificationCodeSubmitView,
 )
 
 urlpatterns = [
@@ -43,5 +44,10 @@ urlpatterns = [
     path('bot/execute/async/', BotExecuteAsyncView.as_view(), name='bot-execute-async'),
     path('bot/task/<str:task_id>/', TaskStatusView.as_view(), name='task-status'),
     path('bot/jobs/<uuid:job_id>/', TaskStatusView.as_view(), name='automation-job-status'),
+    path(
+        'bot/jobs/<uuid:job_id>/verification/',
+        VerificationCodeSubmitView.as_view(),
+        name='automation-job-verification',
+    ),
     path('bot/jobs/<uuid:job_id>/cancel/', JobCancelView.as_view(), name='automation-job-cancel'),
 ]

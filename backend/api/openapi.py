@@ -169,9 +169,18 @@ class TaskStatusResponseSchema(serializers.Serializer):
     result = serializers.JSONField(allow_null=True, required=False)
     error = serializers.CharField(allow_blank=True)
     cancel_requested = serializers.BooleanField()
+    verification_expires_at = serializers.DateTimeField(allow_null=True)
     created_at = serializers.DateTimeField()
     started_at = serializers.DateTimeField(allow_null=True)
     completed_at = serializers.DateTimeField(allow_null=True)
+
+
+class VerificationCodeSubmitRequestSchema(serializers.Serializer):
+    code = serializers.RegexField(regex=r"^\d{4,10}$", max_length=10)
+
+
+class VerificationCodeSubmitResponseSchema(serializers.Serializer):
+    status = serializers.CharField()
 
 
 class BulkQueueResponseSchema(serializers.Serializer):
