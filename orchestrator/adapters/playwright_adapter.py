@@ -394,12 +394,29 @@ class PlaywrightAdapter(BaseAdapter):
                     if self.callback:
                         self.callback.on_follow(username, True)
                 else:
+                    error = (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else None
+                    )
+                    error = error or "Browser reported that the follow failed."
+                    errors.append(f"Failed to follow {username}: {error}")
                     if self.callback:
-                        self.callback.on_follow(username, False)
+                        self.callback.on_follow(
+                            username,
+                            False,
+                            error_message=error,
+                        )
             except Exception as e:
-                errors.append(f"@{username}: {str(e)}")
+                logger.exception("Follow operation raised an exception")
+                error = f"Follow operation raised {type(e).__name__}."
+                errors.append(f"Failed to follow {username}: {error}")
                 if self.callback:
-                    self.callback.on_follow(username, False, error_message=str(e))
+                    self.callback.on_follow(
+                        username,
+                        False,
+                        error_message=error,
+                    )
         
         return TaskResult(
             success=success_count > 0,
@@ -428,8 +445,20 @@ class PlaywrightAdapter(BaseAdapter):
                     success_count += 1
                     if self.callback:
                         self.callback.on_unfollow(username, True)
+                else:
+                    error = (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else None
+                    )
+                    error = error or "Browser reported that the unfollow failed."
+                    errors.append(f"Failed to unfollow {username}: {error}")
             except Exception as e:
-                errors.append(f"@{username}: {str(e)}")
+                logger.exception("Unfollow operation raised an exception")
+                errors.append(
+                    f"Failed to unfollow {username}: "
+                    f"Unfollow operation raised {type(e).__name__}."
+                )
         
         return TaskResult(
             success=success_count > 0,
@@ -510,13 +539,15 @@ class PlaywrightAdapter(BaseAdapter):
         
         try:
             from orchestrator.cookie_sync import CookieSync
-            
-            session_info = await self.browser.get_session_info()
-            cookies = session_info.get("cookies", [])
-            
+
+            cookies = await self.browser.get_cookies()
+            cookie_sync = CookieSync(self.api_client, self.account_id)
+            cookies = cookie_sync.normalize_cookie_data(cookies)
+
             if cookies:
-                cookie_sync = CookieSync(self.api_client, self.account_id)
-                return cookie_sync.save_to_backend(cookies)
+                return cookie_sync.full_sync(cookies)["backend"]
+
+            logger.warning("Cookie synchronization skipped: browser returned no valid cookies")
             return False
         except Exception as e:
             logger.error(f"Failed to sync cookies: {e}")

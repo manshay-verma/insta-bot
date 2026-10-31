@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from account.models import BotAccount
+from .instagram_targets import normalize_instagram_profile_target
 from .models import AutomationJob
 
 
@@ -50,6 +51,20 @@ class AutomationJobCreateSerializer(serializers.Serializer):
                 "Credentials and session data must not be sent in job options."
             )
         return options
+
+    def validate(self, attrs):
+        if attrs["action"] in {"follow", "unfollow"}:
+            targets = []
+            errors = []
+            for index, target in enumerate(attrs["targets"], start=1):
+                try:
+                    targets.append(normalize_instagram_profile_target(target))
+                except ValueError as exc:
+                    errors.append(f"Target {index}: {exc}")
+            if errors:
+                raise serializers.ValidationError({"targets": errors})
+            attrs["targets"] = targets
+        return attrs
 
 
 class VerificationCodeSubmitSerializer(serializers.Serializer):

@@ -8,9 +8,34 @@ from datetime import datetime
 from typing import Optional, Dict
 from urllib.parse import urlsplit
 
+from backend.api.instagram_targets import normalize_instagram_profile_target
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def normalize_cookie_data(data) -> Optional[list]:
+    """Normalize direct cookie lists and Playwright storage-state objects."""
+    if isinstance(data, list):
+        cookies = data
+    elif isinstance(data, dict) and isinstance(data.get("cookies"), list):
+        cookies = data["cookies"]
+    else:
+        return None
+
+    if not cookies:
+        return None
+
+    validated = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        if not cookie.get("name") or not isinstance(cookie.get("value"), (str, int, float)):
+            continue
+        validated.append(dict(cookie))
+    return validated or None
+
 
 class InstagramBrowser:
     """
@@ -335,9 +360,18 @@ class InstagramBrowser:
                           resolved.
         """
         if cookie_path and os.path.exists(cookie_path):
-            with open(cookie_path, 'r') as f:
-                cookies = json.load(f)
-                await self.context.add_cookies(cookies)
+            try:
+                with open(cookie_path, 'r') as f:
+                    cookie_data = json.load(f)
+                cookies = normalize_cookie_data(cookie_data)
+                if cookies is None:
+                    logger.warning("Cookie file contained no valid cookies; skipping cookie restoration")
+                else:
+                    await self.context.add_cookies(cookies)
+                    logger.info("Restored %d validated cookies for session login", len(cookies))
+            except Exception as e:
+                logger.warning("Cookie restoration failed; continuing with authenticated-state validation: %s", e)
+
             await self.page.goto("https://www.instagram.com/")
             await asyncio.sleep(random.uniform(3, 5))
 
@@ -1187,6 +1221,7 @@ class InstagramBrowser:
         
         return {
             'is_valid': is_valid,
+            'cookies': cookies,
             'cookies_count': len(cookies),
             'has_session_id': session_id is not None,
             'has_csrf_token': csrf_token is not None,
@@ -3165,7 +3200,9 @@ class InstagramBrowser:
             }
             
             # Navigate to profile if username provided
-            if username:
+            if username is not None:
+                username = normalize_instagram_profile_target(username)
+                result['username'] = username
                 logger.info(f"Navigating to profile: {username}")
                 await self.page.goto(f"https://www.instagram.com/{username}/")
                 await asyncio.sleep(random.uniform(2, 4))
@@ -3326,7 +3363,9 @@ class InstagramBrowser:
             }
             
             # Navigate to profile if username provided
-            if username:
+            if username is not None:
+                username = normalize_instagram_profile_target(username)
+                result['username'] = username
                 logger.info(f"Navigating to profile: {username}")
                 await self.page.goto(f"https://www.instagram.com/{username}/")
                 await asyncio.sleep(random.uniform(2, 4))

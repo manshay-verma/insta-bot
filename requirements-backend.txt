@@ -8,7 +8,8 @@ channels==4.0.0
 daphne==4.0.0
 psycopg2-binary==2.9.9
 celery==5.3.4
-redis==5.0.1
+kombu==5.6.2
+redis==4.6.0
 debugpy
 requests
 cryptography==42.0.8

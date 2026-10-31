@@ -142,25 +142,58 @@ class CookieSync:
         filepath = Path(filepath) if filepath else self.cookie_file_path
         
         try:
-            # Ensure directory exists
+            normalized = self.normalize_cookie_data(cookies)
+            if normalized is None:
+                logger.warning("Refused to export empty or malformed cookies")
+                return False
+
+            # Preserve the project's storage-state convention while exporting valid cookies.
             filepath.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Format for Playwright storage state
             storage_state = {
-                "cookies": cookies,
+                "cookies": normalized,
                 "origins": []
             }
-            
+
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(storage_state, f, indent=2)
-            
-            logger.info(f"Exported {len(cookies)} cookies to {filepath}")
+
+            logger.info(f"Exported {len(normalized)} cookies to {filepath}")
             return True
             
         except Exception as e:
             logger.error(f"Error exporting cookies to file: {e}")
             return False
     
+    @staticmethod
+    def normalize_cookie_data(data: Any) -> Optional[List[Dict]]:
+        """Convert direct-list or storage-state data to a validated cookie list."""
+        if isinstance(data, list):
+            cookies = data
+        elif isinstance(data, dict) and isinstance(data.get("cookies"), list):
+            cookies = data["cookies"]
+        else:
+            logger.error("Invalid cookie data format")
+            return None
+
+        if not cookies:
+            logger.warning("Cookie collection is empty")
+            return None
+
+        validated = []
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                logger.warning("Ignored malformed cookie entry")
+                continue
+            if not cookie.get("name") or not isinstance(cookie.get("value"), (str, int, float)):
+                logger.warning("Ignored cookie without a valid name or value")
+                continue
+            validated.append(dict(cookie))
+
+        if not validated:
+            logger.warning("No valid cookies found in cookie collection")
+            return None
+        return validated
+
     def import_from_file(self, filepath: Path = None) -> Optional[List[Dict]]:
         """
         Load cookies from JSON file.
@@ -181,16 +214,11 @@ class CookieSync:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
             
-            # Handle both formats: direct list or Playwright storage state
-            if isinstance(data, list):
-                cookies = data
-            elif isinstance(data, dict) and "cookies" in data:
-                cookies = data["cookies"]
-            else:
-                logger.error("Invalid cookie file format")
+            cookies = self.normalize_cookie_data(data)
+            if cookies is None:
                 return None
-            
-            logger.info(f"Imported {len(cookies)} cookies from {filepath}")
+
+            logger.info(f"Imported {len(cookies)} valid cookies from {filepath}")
             return cookies
             
         except json.JSONDecodeError as e:

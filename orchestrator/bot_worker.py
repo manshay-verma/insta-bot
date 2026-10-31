@@ -230,19 +230,26 @@ class BotWorker:
     async def _sync_cookies(self):
         """Sync browser cookies back to backend."""
         if not self.browser or not self.cookie_sync:
-            return
+            return False
         
         try:
-            # Get session info which includes cookies
-            session_info = await self.browser.get_session_info()
-            cookies = session_info.get("cookies", [])
-            
+            cookies = await self.browser.get_cookies()
+            cookies = self.cookie_sync.normalize_cookie_data(cookies)
+
             if cookies:
-                self.cookie_sync.full_sync(cookies)
-                logger.info(f"Synced {len(cookies)} cookies")
+                results = self.cookie_sync.full_sync(cookies)
+                if not all(results.values()):
+                    logger.warning("Cookie synchronization did not complete for all destinations")
+                    return False
+                logger.info("Synced %d validated cookies", len(cookies))
+                return True
+
+            logger.warning("Cookie synchronization skipped: browser returned no valid cookies")
+            return False
                 
         except Exception as e:
             logger.error(f"Failed to sync cookies: {e}")
+            return False
     
     async def _execute_task(self, config: TaskConfig) -> bool:
         """Execute the automation task."""
