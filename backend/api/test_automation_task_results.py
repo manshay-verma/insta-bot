@@ -1,5 +1,7 @@
 from contextlib import nullcontext
 from types import SimpleNamespace
+import sys
+import types
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
@@ -7,6 +9,72 @@ from django.test import SimpleTestCase
 
 from .models import AutomationJob
 from .tasks import execute_automation_job
+
+
+def _orchestrator_module(worker):
+    module = types.ModuleType("orchestrator")
+    module.__path__ = []
+
+    class AdapterType:
+        PLAYWRIGHT = "playwright"
+        DOWNLOADER = "downloader"
+
+    class TaskType:
+        LIKE_POSTS = "like_posts"
+        FOLLOW_USERS = "follow_users"
+        UNFOLLOW_USERS = "unfollow_users"
+        SCRAPE_PROFILE = "scrape_profile"
+        VIEW_STORIES = "view_stories"
+        BULK_DOWNLOAD = "bulk_download"
+        COMMENT = "comment"
+
+    module.AdapterType = AdapterType
+    module.TaskType = TaskType
+    module.UnifiedWorker = lambda **kwargs: worker
+    return module
+
+
+def _runner_supervisor_module(worker):
+    module = types.ModuleType("orchestrator.runner_supervisor")
+
+    class BrowserRunnerSupervisor:
+        def __init__(self, *args, **kwargs):
+            self.socket_path = type("SocketPath", (), {"__str__": lambda self: "/tmp/runner.sock"})()
+
+        def start(self):
+            return SimpleNamespace(
+                runner_id="runner-test",
+                pid=123,
+                start_ticks=456,
+                container_boot_id="boot-test",
+                pgid=123,
+                profile_path="/tmp/profile",
+            )
+
+        async def reconnect(self, timeout_seconds=10):
+            return True
+
+        async def execute(self):
+            result = await worker.execute("playwright", "follow", ["example"])
+            return {
+                "ok": True,
+                "result": {
+                    "success": result.success,
+                    "items_processed": result.items_processed,
+                    "errors": result.errors,
+                    "data": getattr(result, "data", None),
+                },
+            }
+
+        async def disable_actions(self):
+            return True
+
+        async def close(self):
+            await worker.cleanup()
+
+    module.BrowserRunnerSupervisor = BrowserRunnerSupervisor
+    module.RunnerSupervisorError = RuntimeError
+    return module
 
 
 class AutomationTaskResultTests(SimpleTestCase):
@@ -20,6 +88,10 @@ class AutomationTaskResultTests(SimpleTestCase):
             status=AutomationJob.Status.QUEUED,
             started_at=None,
             attempt_count=0,
+            execution_generation=1,
+            application_retry_count=0,
+            worker_redelivery_count=0,
+            recovery_state="none",
             cancel_requested=False,
             save=Mock(),
             refresh_from_db=Mock(),
@@ -39,7 +111,28 @@ class AutomationTaskResultTests(SimpleTestCase):
             patch("api.tasks.AutomationJob.objects", manager),
             patch("api.tasks.transaction.atomic", return_value=nullcontext()),
             patch("api.tasks.close_old_connections"),
+            patch("api.tasks.register_browser_runner", return_value=True),
+            patch.dict(
+                sys.modules,
+                {
+                    "orchestrator": _orchestrator_module(worker),
+                    "orchestrator.runner_supervisor": _runner_supervisor_module(worker),
+                },
+            ),
             patch("orchestrator.UnifiedWorker", return_value=worker),
+            patch(
+                "api.tasks.acquire_account_lock",
+                return_value=SimpleNamespace(owner_token="test-owner-token"),
+            ),
+            patch("api.tasks.release_account_lock", return_value=True),
+            patch(
+                "api.tasks.resolve_execution_recovery",
+                return_value=SimpleNamespace(
+                    action="start_new_generation",
+                    execution_generation=1,
+                    delivery_key="initial:test",
+                ),
+            ),
         ):
             task_result = execute_automation_job.run(str(job.id))
         return job, task_result
@@ -91,18 +184,43 @@ class AutomationTaskResultTests(SimpleTestCase):
             patch("api.tasks.AutomationJob.objects", manager),
             patch("api.tasks.transaction.atomic", return_value=nullcontext()),
             patch("api.tasks.close_old_connections"),
+            patch("api.tasks.register_browser_runner", return_value=True),
+            patch.dict(
+                sys.modules,
+                {
+                    "orchestrator": _orchestrator_module(worker),
+                    "orchestrator.runner_supervisor": _runner_supervisor_module(worker),
+                },
+            ),
             patch("orchestrator.UnifiedWorker", return_value=worker),
+            patch(
+                "api.tasks.acquire_account_lock",
+                return_value=SimpleNamespace(owner_token="test-owner-token"),
+            ),
+            patch("api.tasks.release_account_lock", return_value=True),
+            patch(
+                "api.tasks.resolve_execution_recovery",
+                return_value=SimpleNamespace(
+                    action="start_new_generation",
+                    execution_generation=1,
+                    delivery_key="initial:test",
+                ),
+            ),
         ):
             with self.assertRaisesRegex(RuntimeError, "worker failed"):
                 execute_automation_job.run(str(job.id))
 
-        manager.filter.assert_called_once_with(id=job.id, status__in=(
-            AutomationJob.Status.QUEUED,
-            AutomationJob.Status.RUNNING,
-            AutomationJob.Status.RETRYING,
-            AutomationJob.Status.AWAITING_OTP,
-            AutomationJob.Status.CANCELLING,
-        ))
+        manager.filter.assert_called_once_with(
+            id=job.id,
+            status__in=(
+                AutomationJob.Status.QUEUED,
+                AutomationJob.Status.RUNNING,
+                AutomationJob.Status.RETRYING,
+                AutomationJob.Status.AWAITING_OTP,
+                AutomationJob.Status.CANCELLING,
+            ),
+            execution_generation=1,
+        )
         self.assertEqual(
             manager.filter.return_value.update.call_args.kwargs["status"],
             AutomationJob.Status.FAILED,

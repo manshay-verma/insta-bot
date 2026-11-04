@@ -11,6 +11,19 @@ from asgiref.sync import sync_to_async
 from redis import asyncio as redis_async
 
 from .models import AutomationJob
+from .account_locks import (
+    AccountLockBusy,
+    AccountLockOwnershipError,
+    ExecutionGenerationError,
+    acquire_account_lock,
+    normalize_execution_generation,
+    release_account_lock,
+    renew_account_lock,
+    register_browser_runner,
+    validate_browser_runner,
+    resolve_execution_recovery,
+    build_worker_recovery_delivery_key,
+)
 from .verification import OTP_TIMEOUT_SECONDS, otp_redis_key
 
 logger = logging.getLogger(__name__)
@@ -25,17 +38,22 @@ def _result_summary(result, targets):
     }
 
 
-def _set_job_failure(job_id, message, result=None):
+def _set_job_failure(job_id, message, execution_generation, result=None):
     failed_at = timezone.now()
-    AutomationJob.objects.filter(
-        id=job_id,
-        status__in=(
+    execution_generation = normalize_execution_generation(execution_generation)
+    filters = {
+        "status__in": (
             AutomationJob.Status.QUEUED,
             AutomationJob.Status.RUNNING,
             AutomationJob.Status.RETRYING,
             AutomationJob.Status.AWAITING_OTP,
             AutomationJob.Status.CANCELLING,
         ),
+        "execution_generation": execution_generation,
+    }
+    AutomationJob.objects.filter(
+        id=job_id,
+        **filters,
     ).update(
         status=AutomationJob.Status.FAILED,
         error=message,
@@ -46,13 +64,14 @@ def _set_job_failure(job_id, message, result=None):
     )
 
 
-async def _wait_for_job_otp(job_id):
+async def _wait_for_job_otp(job_id, execution_generation):
     expires_at = timezone.now() + timedelta(seconds=OTP_TIMEOUT_SECONDS)
     marked_pending = await sync_to_async(
         lambda: AutomationJob.objects.filter(
             id=job_id,
             status=AutomationJob.Status.RUNNING,
             cancel_requested=False,
+            execution_generation=execution_generation,
         ).update(
             status=AutomationJob.Status.AWAITING_OTP,
             verification_expires_at=expires_at,
@@ -69,7 +88,7 @@ async def _wait_for_job_otp(job_id):
         socket_connect_timeout=2,
         socket_timeout=2,
     )
-    key = otp_redis_key(job_id)
+    key = otp_redis_key(job_id, execution_generation)
     try:
         while timezone.now() < expires_at:
             code = await redis_client.getdel(key)
@@ -79,6 +98,7 @@ async def _wait_for_job_otp(job_id):
                         id=job_id,
                         status=AutomationJob.Status.AWAITING_OTP,
                         cancel_requested=False,
+                        execution_generation=execution_generation,
                     ).update(
                         status=AutomationJob.Status.RUNNING,
                         verification_expires_at=None,
@@ -94,9 +114,10 @@ async def _wait_for_job_otp(job_id):
                 return code
 
             job_state = await sync_to_async(
-                lambda: AutomationJob.objects.filter(id=job_id)
-                .values("status", "cancel_requested")
-                .first(),
+                lambda: AutomationJob.objects.filter(
+                    id=job_id,
+                    execution_generation=execution_generation,
+                ).values("status", "cancel_requested").first(),
                 thread_sensitive=True,
             )()
             if (
@@ -114,6 +135,7 @@ async def _wait_for_job_otp(job_id):
             lambda: AutomationJob.objects.filter(
                 id=job_id,
                 status=AutomationJob.Status.AWAITING_OTP,
+                execution_generation=execution_generation,
             ).update(
                 status=AutomationJob.Status.FAILED,
                 error="The verification code was not submitted before the challenge expired.",
@@ -132,53 +154,174 @@ async def _wait_for_job_otp(job_id):
 
 
 @shared_task(bind=True, name="api.execute_automation_job")
-def execute_automation_job(self, job_id):
+def execute_automation_job(
+    self,
+    job_id,
+    lock_owner_token=None,
+    execution_generation=None,
+    delivery_reason="initial",
+    recovery_delivery_key=None,
+    recovery_resume=False,
+    runner_identity_confirmed=False,
+):
     """Execute one durable job in the Celery automation-worker process."""
     close_old_connections()
     job = None
+    lock_owner_token = lock_owner_token
+    if execution_generation is not None:
+        try:
+            execution_generation = normalize_execution_generation(execution_generation)
+        except ExecutionGenerationError:
+            return {
+                "job_id": str(job_id),
+                "status": "invalid_execution_generation",
+            }
     try:
         with transaction.atomic():
             job = AutomationJob.objects.select_for_update().get(id=job_id)
-            if job.status == AutomationJob.Status.CANCELLED:
-                return {"job_id": str(job.id), "status": job.status}
-            if job.status == AutomationJob.Status.AWAITING_OTP:
-                job.status = AutomationJob.Status.FAILED
-                job.error = (
-                    "The worker restarted while verification was pending; "
-                    "submit a new automation job."
-                )
-                job.completed_at = timezone.now()
-                job.verification_expires_at = None
-                job.save(
-                    update_fields=[
-                        "status",
-                        "error",
-                        "completed_at",
-                        "verification_expires_at",
-                        "updated_at",
-                    ]
-                )
-                return {"job_id": str(job.id), "status": job.status}
-            if job.cancel_requested:
-                job.status = AutomationJob.Status.CANCELLED
-                job.completed_at = timezone.now()
-                job.save(update_fields=["status", "completed_at", "updated_at"])
-                return {"job_id": str(job.id), "status": job.status}
-
-            job.status = AutomationJob.Status.RUNNING
-            job.started_at = job.started_at or timezone.now()
-            job.attempt_count += 1
             if self.request.id:
                 job.celery_task_id = self.request.id
-            job.save(
-                update_fields=[
-                    "status",
-                    "started_at",
-                    "attempt_count",
-                    "celery_task_id",
-                    "updated_at",
-                ]
+            job.save(update_fields=["celery_task_id", "updated_at"])
+            source = (
+                "application_retry"
+                if delivery_reason == "application_retry"
+                else "worker_redelivery"
+                if delivery_reason == "worker_redelivery"
+                else "initial"
             )
+            if recovery_delivery_key is None:
+                if source == "initial":
+                    recovery_delivery_key = (
+                        f"initial:{job.id}:{self.request.id or 'delivery'}"
+                    )
+                elif source == "application_retry":
+                    recovery_delivery_key = (
+                        f"application:{job.id}:{job.execution_generation + 1}"
+                    )
+                elif source == "worker_redelivery":
+                    failed_generation = (
+                        execution_generation
+                        if execution_generation is not None
+                        else job.execution_generation
+                    )
+                    recovery_delivery_key = build_worker_recovery_delivery_key(
+                        job_id=job.id,
+                        failed_generation=failed_generation,
+                    )
+            try:
+                decision = resolve_execution_recovery(
+                    job_id=job.id,
+                    source=source,
+                    delivery_key=recovery_delivery_key,
+                    supplied_generation=execution_generation,
+                    owner_token=lock_owner_token,
+                    recovery_resume=recovery_resume,
+                    runner_identity_confirmed=runner_identity_confirmed,
+                )
+            except ExecutionGenerationError as exc:
+                logger.warning(
+                    "Execution recovery rejected",
+                    extra={"job_id": str(job.id), "error_type": type(exc).__name__},
+                )
+                return {"job_id": str(job.id), "status": job.status, "recovery_rejected": True}
+            except AccountLockOwnershipError as exc:
+                logger.warning(
+                    "Execution recovery ownership rejected",
+                    extra={"job_id": str(job.id), "error_type": type(exc).__name__},
+                )
+                return {"job_id": str(job.id), "status": job.status, "recovery_rejected": True}
+
+            if decision.action in {"duplicate_delivery", "otp_reconnect"}:
+                if decision.action == "otp_reconnect":
+                    try:
+                        identity = validate_browser_runner(
+                            account_id=job.account_id,
+                            job_id=job.id,
+                            owner_token=lock_owner_token,
+                            execution_generation=decision.execution_generation,
+                        )
+                        if not job.runner_ipc_path:
+                            raise AccountLockOwnershipError(
+                                "Confirmed runner IPC endpoint is unavailable."
+                            )
+                        from orchestrator.runner_supervisor import (
+                            BrowserRunnerSupervisor,
+                            RunnerSupervisorError,
+                        )
+
+                        reconnect_supervisor = BrowserRunnerSupervisor(
+                            job_id=job.id,
+                            account_id=job.account_id,
+                            execution_generation=decision.execution_generation,
+                            lock_owner_token=lock_owner_token,
+                            adapter_type="playwright",
+                            task_type=job.action,
+                            targets=job.targets,
+                            existing_identity={
+                                "runner_id": str(identity.runner_id),
+                                "pid": identity.pid,
+                                "start_ticks": identity.start_ticks,
+                                "container_boot_id": identity.container_boot_id,
+                                "pgid": identity.pgid,
+                            },
+                            existing_socket_path=job.runner_ipc_path,
+                        )
+                        async def reconnect_existing_runner():
+                            await reconnect_supervisor.reconnect(timeout_seconds=10)
+                            await reconnect_supervisor.request("identity")
+
+                        asyncio.run(reconnect_existing_runner())
+                    except (AccountLockOwnershipError, RunnerSupervisorError):
+                        return {
+                            "job_id": str(job.id),
+                            "status": job.status,
+                            "recovery_rejected": True,
+                        }
+                return {
+                    "job_id": str(job.id),
+                    "status": job.status,
+                    "execution_generation": decision.execution_generation,
+                    "duplicate_delivery": decision.action == "duplicate_delivery",
+                    "awaiting_otp": decision.action == "otp_reconnect",
+                }
+            if decision.action == "worker_loss_limit":
+                return {
+                    "job_id": str(job.id),
+                    "status": job.status,
+                    "execution_generation": decision.execution_generation,
+                    "worker_loss_limit": True,
+                }
+            execution_generation = decision.execution_generation
+
+        try:
+            account_lock = acquire_account_lock(
+                account_id=job.account_id,
+                job_id=job.id,
+                owner_token=lock_owner_token,
+                execution_generation=job.execution_generation,
+            )
+            lock_owner_token = account_lock.owner_token
+            execution_generation = getattr(
+                account_lock,
+                "execution_generation",
+                execution_generation,
+            )
+        except (AccountLockBusy, AccountLockOwnershipError) as exc:
+            _set_job_failure(
+                job.id,
+                str(exc),
+                execution_generation=job.execution_generation,
+            )
+            logger.warning(
+                "automation job could not acquire its account lock",
+                extra={
+                    "job_id": str(job.id),
+                    "task_id": self.request.id,
+                    "account_id": job.account_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {"job_id": str(job.id), "status": AutomationJob.Status.FAILED}
 
         from orchestrator import AdapterType, TaskType, UnifiedWorker
 
@@ -204,34 +347,79 @@ def execute_automation_job(self, job_id):
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
         async def run_job():
-            worker = UnifiedWorker(account_id=job.account_id)
+            from orchestrator.runner_supervisor import BrowserRunnerSupervisor
+            from types import SimpleNamespace
 
-            async def verification_callback(_prompt):
-                return await _wait_for_job_otp(job.id)
+            supervisor = BrowserRunnerSupervisor(
+                job_id=job.id,
+                account_id=job.account_id,
+                execution_generation=execution_generation,
+                lock_owner_token=lock_owner_token,
+                adapter_type=getattr(adapter_type, "value", adapter_type),
+                task_type=getattr(task_type, "value", task_type),
+                targets=job.targets,
+                options=dict(job.options),
+            )
+            identity = supervisor.start()
+            await sync_to_async(register_browser_runner, thread_sensitive=True)(
+                account_id=job.account_id,
+                job_id=job.id,
+                owner_token=lock_owner_token,
+                execution_generation=execution_generation,
+                runner=identity,
+                runner_ipc_path=str(supervisor.socket_path),
+            )
+            await supervisor.reconnect(timeout_seconds=10)
 
+            async def renew_lock_heartbeat():
+                while True:
+                    await asyncio.sleep(300)
+                    try:
+                        await sync_to_async(
+                            renew_account_lock,
+                            thread_sensitive=True,
+                        )(
+                            account_id=job.account_id,
+                            job_id=job.id,
+                            owner_token=lock_owner_token,
+                            execution_generation=execution_generation,
+                        )
+                    except Exception:
+                        await supervisor.disable_actions()
+                        raise
+
+            heartbeat_task = asyncio.create_task(renew_lock_heartbeat())
             try:
-                if not await worker.start_session():
-                    raise RuntimeError("Could not start the backend automation session.")
-                execution_options = dict(job.options)
-                if adapter_type == AdapterType.PLAYWRIGHT:
-                    execution_options["verification_callback"] = verification_callback
-                return await worker.execute(
-                    adapter_type,
-                    task_type,
-                    job.targets,
-                    **execution_options,
+                response = await supervisor.execute()
+                result = response["result"]
+                return SimpleNamespace(
+                    success=bool(result["success"]),
+                    items_processed=int(result["items_processed"]),
+                    errors=list(result["errors"]),
+                    data=result.get("data"),
                 )
             finally:
                 try:
-                    await worker.cleanup()
+                    await supervisor.close()
                 finally:
-                    await worker.stop_session()
+                    heartbeat_task.cancel()
+                    await asyncio.gather(heartbeat_task, return_exceptions=True)
 
         result = asyncio.run(run_job())
         summary = _result_summary(result, job.targets)
         finished_at = timezone.now()
         with transaction.atomic():
             current = AutomationJob.objects.select_for_update().get(id=job.id)
+            if getattr(current, "execution_generation", execution_generation) != execution_generation:
+                logger.warning(
+                    "Stale execution result rejected",
+                    extra={
+                        "job_id": str(job.id),
+                        "execution_generation": execution_generation,
+                        "current_generation": current.execution_generation,
+                    },
+                )
+                return {"job_id": str(job.id), "status": current.status, "stale_generation": True}
             if current.cancel_requested:
                 current.status = AutomationJob.Status.CANCELLED
             else:
@@ -275,6 +463,18 @@ def execute_automation_job(self, job_id):
             and job.action == "scrape_profile"
             and self.request.retries < 2
         ):
+            try:
+                release_account_lock(
+                    account_id=job.account_id,
+                    job_id=job.id,
+                    owner_token=lock_owner_token,
+                    execution_generation=execution_generation,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not release account lock before retry scheduling",
+                    extra={"job_id": str(job.id), "account_id": job.account_id},
+                )
             job.status = AutomationJob.Status.RETRYING
             job.error = f"Transient worker failure ({type(exc).__name__}); retry scheduled."
             job.save(update_fields=["status", "error", "updated_at"])
@@ -282,11 +482,20 @@ def execute_automation_job(self, job_id):
                 exc=exc,
                 countdown=min(30, 2 ** (self.request.retries + 1)),
                 max_retries=2,
+                kwargs={
+                    "lock_owner_token": lock_owner_token,
+                    "execution_generation": execution_generation,
+                    "delivery_reason": "application_retry",
+                    "recovery_delivery_key": (
+                        f"application:{job.id}:{execution_generation + 1}"
+                    ),
+                },
             )
         if job is not None:
             _set_job_failure(
                 job.id,
                 f"Worker execution failed ({type(exc).__name__}).",
+                execution_generation=execution_generation,
             )
         logger.error(
             "automation job execution raised an exception",
@@ -300,9 +509,34 @@ def execute_automation_job(self, job_id):
         )
         raise
     finally:
+        if job is not None and lock_owner_token is not None:
+            try:
+                release_account_lock(
+                    account_id=job.account_id,
+                    job_id=job.id,
+                    owner_token=lock_owner_token,
+                    execution_generation=execution_generation,
+                )
+            except Exception:
+                logger.warning(
+                    "Account lock cleanup failed",
+                    extra={
+                        "job_id": str(job.id),
+                        "account_id": job.account_id,
+                        "task_id": self.request.id,
+                    },
+                )
         close_old_connections()
 
 
 @shared_task(bind=True, name="api.healthcheck")
 def worker_healthcheck(self):
-    return {"ok": True, "worker": self.request.hostname, "checked_at": timezone.now().isoformat()}
+    from .account_locks import reconcile_expired_locks
+
+    reconciled = reconcile_expired_locks()
+    return {
+        "ok": True,
+        "worker": self.request.hostname,
+        "checked_at": timezone.now().isoformat(),
+        "locks_reconciled": reconciled,
+    }

@@ -185,7 +185,7 @@ class AutomationJobAPITests(TestCase):
 
         response = self.client.post(
             f"/api/v1/bot/jobs/{job.id}/verification/",
-            {"code": "123456"},
+            {"code": "123456", "execution_generation": job.execution_generation},
             format="json",
         )
 
@@ -194,6 +194,48 @@ class AutomationJobAPITests(TestCase):
         redis_client.set.assert_called_once()
         self.assertEqual(redis_client.set.call_args.args[1], "123456")
         redis_client.close.assert_called_once()
+
+    def test_verification_code_requires_execution_generation(self):
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.AWAITING_OTP,
+            verification_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        for payload in (
+            {"code": "123456"},
+            {"code": "123456", "execution_generation": None},
+            {"code": "123456", "execution_generation": "0"},
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    f"/api/v1/bot/jobs/{job.id}/verification/",
+                    payload,
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+
+    def test_verification_code_rejects_stale_execution_generation(self):
+        job = AutomationJob.objects.create(
+            user=self.user,
+            account=self.account,
+            action="like",
+            targets=["https://www.instagram.com/p/example/"],
+            status=AutomationJob.Status.AWAITING_OTP,
+            execution_generation=4,
+            verification_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        response = self.client.post(
+            f"/api/v1/bot/jobs/{job.id}/verification/",
+            {"code": "123456", "execution_generation": 3},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
 
     @patch("api.bot_execute.Redis.from_url")
     def test_code_submission_is_rejected_for_non_pending_job(self, redis_from_url):
@@ -207,7 +249,7 @@ class AutomationJobAPITests(TestCase):
 
         response = self.client.post(
             f"/api/v1/bot/jobs/{job.id}/verification/",
-            {"code": "123456"},
+            {"code": "123456", "execution_generation": job.execution_generation},
             format="json",
         )
 
@@ -230,7 +272,7 @@ class AutomationJobAPITests(TestCase):
 
         response = self.client.post(
             f"/api/v1/bot/jobs/{job.id}/verification/",
-            {"code": "123456"},
+            {"code": "123456", "execution_generation": job.execution_generation},
             format="json",
         )
 
@@ -252,7 +294,7 @@ class AutomationJobAPITests(TestCase):
 
         response = self.client.post(
             f"/api/v1/bot/jobs/{job.id}/verification/",
-            {"code": "abc123"},
+            {"code": "abc123", "execution_generation": job.execution_generation},
             format="json",
         )
 
@@ -272,7 +314,7 @@ class AutomationJobAPITests(TestCase):
 
         response = other_client.post(
             f"/api/v1/bot/jobs/{job.id}/verification/",
-            {"code": "123456"},
+            {"code": "123456", "execution_generation": job.execution_generation},
             format="json",
         )
 

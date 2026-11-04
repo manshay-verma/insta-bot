@@ -48,6 +48,7 @@ services:
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL with Redis credentials}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND with Redis credentials}
       INSTABOT_WORKER_TOKEN: ${INSTABOT_WORKER_TOKEN:?Set INSTABOT_WORKER_TOKEN}
+      INSTABOT_COOKIE_ENCRYPTION_KEY: ${INSTABOT_COOKIE_ENCRYPTION_KEY:?Set INSTABOT_COOKIE_ENCRYPTION_KEY}
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
     ports:
       - "8000:8000"
@@ -73,11 +74,14 @@ services:
       context: .
       dockerfile: infradocker/automation.Dockerfile
     restart: unless-stopped
+    volumes:
+      - instabot_profiles:/app/profiles
     environment:
       <<: *django_environment
       PYTHONPATH: /app
       DJANGO_SETTINGS_MODULE: config.settings
       INSTABOT_API_URL: http://backend:8000/api/v1
+      INSTABOT_PROFILE_ROOT: /app/profiles
     command: ["celery", "-A", "config", "worker", "--loglevel=info"]
     depends_on:
       db:
@@ -155,3 +159,4 @@ volumes:
   postgres_data:
   redis_data:
   mongodb_data:
+  instabot_profiles:

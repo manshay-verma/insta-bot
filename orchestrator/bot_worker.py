@@ -204,15 +204,11 @@ class BotWorker:
         cookies = self.cookie_sync.load_from_backend()
         
         if cookies:
-            # Export to file for browser
-            cookie_path = str(self.cookie_sync.cookie_file_path)
-            self.cookie_sync.export_to_file(cookies)
-            
             try:
                 login_success = await self.browser.login(
                     username=username,
                     password="",  # Not needed with cookies
-                    cookie_path=cookie_path
+                    cookies=cookies,
                 )
                 
                 if login_success:
@@ -238,8 +234,8 @@ class BotWorker:
 
             if cookies:
                 results = self.cookie_sync.full_sync(cookies)
-                if not all(results.values()):
-                    logger.warning("Cookie synchronization did not complete for all destinations")
+                if not results["backend"]:
+                    logger.warning("Cookie synchronization did not persist cookies to PostgreSQL")
                     return False
                 logger.info("Synced %d validated cookies", len(cookies))
                 return True

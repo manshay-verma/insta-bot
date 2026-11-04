@@ -16,6 +16,10 @@ class WorkerTokenAuthentication(BaseAuthentication):
             re.compile(r"^/api/v1/accounts/\d+/update_cookies/$"),
             frozenset({"POST"}),
         ),
+        (
+            re.compile(r"^/api/v1/accounts/\d+/session_status/$"),
+            frozenset({"POST"}),
+        ),
         (re.compile(r"^/api/v1/bots/control/$"), frozenset({"POST"})),
         (re.compile(r"^/api/v1/sessions/\d+/end/$"), frozenset({"POST"})),
         (re.compile(r"^/api/v1/analytics/actions/$"), frozenset({"POST"})),

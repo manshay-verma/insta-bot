@@ -63,7 +63,10 @@ class InstaApiClient:
     def __init__(
         self,
         base_url: str = None,
-        timeout: int = 30
+        timeout: int = 30,
+        job_id: str = None,
+        lock_owner_token: str = None,
+        execution_generation: int = None,
     ):
         """
         Initialize API client.
@@ -77,6 +80,14 @@ class InstaApiClient:
             "http://127.0.0.1:8000/api/v1"
         )
         self.timeout = timeout
+        self.job_id = job_id
+        self.lock_owner_token = lock_owner_token
+        self.execution_generation = execution_generation
+        if job_id and lock_owner_token:
+            if type(execution_generation) is not int or execution_generation < 0:
+                raise ValueError(
+                    "execution_generation must be a non-negative integer for worker requests."
+                )
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
@@ -167,13 +178,46 @@ class InstaApiClient:
     def update_cookies(
         self,
         account_id: int,
-        cookies: List[Dict]
+        cookies: List[Dict],
+        expected_version: int = None,
     ) -> ApiResponse:
         """Push session cookies to backend."""
+        data = {"cookies": cookies}
+        if expected_version is not None:
+            data["expected_version"] = expected_version
+        if not self.job_id or not self.lock_owner_token:
+            raise ValueError("Worker cookie updates require job_id and lock_owner_token.")
+        if type(self.execution_generation) is not int or self.execution_generation < 0:
+            raise ValueError(
+                "execution_generation must be a non-negative integer for worker requests."
+            )
+        data["job_id"] = self.job_id
+        data["lock_owner_token"] = self.lock_owner_token
+        data["execution_generation"] = self.execution_generation
         return self._request(
             "POST",
             f"/accounts/{account_id}/update_cookies/",
-            data={"cookies": cookies}
+            data=data
+        )
+
+    def update_session_status(self, account_id: int, session_status: str) -> ApiResponse:
+        """Update explicit account session state from automation workers."""
+        data = {"session_status": session_status}
+        if not self.job_id or not self.lock_owner_token:
+            raise ValueError(
+                "Worker session status updates require job_id and lock_owner_token."
+            )
+        if type(self.execution_generation) is not int or self.execution_generation < 0:
+            raise ValueError(
+                "execution_generation must be a non-negative integer for worker requests."
+            )
+        data["job_id"] = self.job_id
+        data["lock_owner_token"] = self.lock_owner_token
+        data["execution_generation"] = self.execution_generation
+        return self._request(
+            "POST",
+            f"/accounts/{account_id}/session_status/",
+            data=data,
         )
     
     # ==================== Sessions ====================

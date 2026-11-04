@@ -8,6 +8,7 @@ Provides browser automation for Instagram actions.
 import asyncio
 import logging
 import sys
+import os
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
@@ -64,10 +65,17 @@ class PlaywrightAdapter(BaseAdapter):
             # Fetch account for proxy config
             await self.fetch_account()
             proxy = self.get_proxy_config()
-            
+            profile_root = Path(
+                os.getenv("INSTABOT_PROFILE_ROOT", "/app/profiles")
+            )
+            profile_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(profile_root, 0o700)
+            profile_dir = profile_root / str(self.account_id)
+
             self.browser = InstagramBrowser(
                 headless=self.headless,
-                proxy=proxy
+                proxy=proxy,
+                profile_dir=str(profile_dir),
             )
             
             await self.browser.start()
@@ -168,29 +176,35 @@ class PlaywrightAdapter(BaseAdapter):
         
         # Try cookie login first
         cookies = cookie_sync.load_from_backend()
-        cookie_path = None
-        
-        if cookies:
-            cookie_path = str(cookie_sync.cookie_file_path)
-            cookie_sync.export_to_file(cookies)
+        if cookies is None:
+            self.api_client.update_session_status(self.account_id, "login_required")
         
         try:
             # 1) Try cookie-based login if present
-            if cookie_path:
+            if cookies:
                 ok = await self.browser.login(
                     username=username,
                     password="",
-                    cookie_path=cookie_path,
                     verification_callback=kwargs.get("verification_callback"),
+                    cookies=cookies,
                 )
                 if ok:
                     self._logged_in = True
                     # Sync fresh cookies back (cookies may get rotated by IG)
                     try:
                         fresh = await self.browser.get_cookies()
-                        cookie_sync.save_to_backend(fresh)
-                    except Exception:
-                        pass
+                        if not cookie_sync.save_to_backend(fresh):
+                            return TaskResult(
+                                success=False,
+                                task_type=TaskType.LOGIN,
+                                errors=["Session validated but fresh cookies could not be persisted securely."]
+                            )
+                    except Exception as exc:
+                        return TaskResult(
+                            success=False,
+                            task_type=TaskType.LOGIN,
+                            errors=[f"Session validated but cookie persistence failed: {type(exc).__name__}"]
+                        )
                     return TaskResult(
                         success=True,
                         task_type=TaskType.LOGIN,
@@ -229,7 +243,6 @@ class PlaywrightAdapter(BaseAdapter):
             ok = await self.browser.login(
                 username=username,
                 password=password,
-                cookie_path=cookie_path or str(cookie_sync.cookie_file_path),
                 verification_callback=kwargs.get("verification_callback"),
             )
 
@@ -237,21 +250,36 @@ class PlaywrightAdapter(BaseAdapter):
                 self._logged_in = True
                 try:
                     fresh = await self.browser.get_cookies()
-                    cookie_sync.save_to_backend(fresh)
-                except Exception:
-                    pass
+                    if not cookie_sync.save_to_backend(fresh):
+                        return TaskResult(
+                            success=False,
+                            task_type=TaskType.LOGIN,
+                            errors=["Password login succeeded but fresh cookies could not be persisted securely."]
+                        )
+                except Exception as exc:
+                    return TaskResult(
+                        success=False,
+                        task_type=TaskType.LOGIN,
+                        errors=[f"Password login succeeded but cookie persistence failed: {type(exc).__name__}"]
+                    )
                 return TaskResult(
                     success=True,
                     task_type=TaskType.LOGIN,
                     data={"username": username, "method": "password"}
                 )
 
+            self.api_client.update_session_status(self.account_id, "login_required")
             return TaskResult(
                 success=False,
                 task_type=TaskType.LOGIN,
                 errors=["Login failed or checkpointed (session invalid)"]
             )
         except Exception as e:
+            message = str(e).lower()
+            if "checkpoint" in message or "verification" in message or "challenge" in message or "2fa" in message:
+                self.api_client.update_session_status(self.account_id, "verification_required")
+            else:
+                self.api_client.update_session_status(self.account_id, "login_required")
             return TaskResult(
                 success=False,
                 task_type=TaskType.LOGIN,

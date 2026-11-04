@@ -169,7 +169,7 @@ class TaskStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(responses={200: TaskStatusResponseSchema, 404: ApiErrorSchema})
-    def get(self, request, task_id):
+    def get(self, request, task_id=None, job_id=None):
         try:
             if request.resolver_match.url_name == "task-status":
                 job = AutomationJob.objects.get(
@@ -177,7 +177,7 @@ class TaskStatusView(APIView):
                     user=request.user,
                 )
             else:
-                job = AutomationJob.objects.get(id=task_id, user=request.user)
+                job = AutomationJob.objects.get(id=job_id, user=request.user)
         except (AutomationJob.DoesNotExist, ValueError) as exc:
             raise NotFound("Automation job not found.") from exc
         _expire_pending_verification(job)
@@ -202,12 +202,7 @@ class VerificationCodeSubmitView(APIView):
     def post(self, request, job_id):
         serializer = VerificationCodeSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        redis_client = Redis.from_url(
-            settings.CELERY_BROKER_URL,
-            decode_responses=True,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-        )
+        redis_client = None
         try:
             with transaction.atomic():
                 try:
@@ -218,7 +213,13 @@ class VerificationCodeSubmitView(APIView):
                 except (AutomationJob.DoesNotExist, ValueError) as exc:
                     raise NotFound("Automation job not found.") from exc
 
-                if _expire_pending_verification(job):
+                requested_generation = serializer.validated_data["execution_generation"]
+                if requested_generation != job.execution_generation:
+                    response = Response(
+                        {"detail": "This OTP request belongs to a stale execution generation."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                elif _expire_pending_verification(job):
                     response = Response(
                         {"detail": "The verification challenge has expired."},
                         status=status.HTTP_409_CONFLICT,
@@ -232,9 +233,15 @@ class VerificationCodeSubmitView(APIView):
                         status=status.HTTP_409_CONFLICT,
                     )
                 else:
+                    redis_client = Redis.from_url(
+                        settings.CELERY_BROKER_URL,
+                        decode_responses=True,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
                     try:
                         accepted = redis_client.set(
-                            otp_redis_key(job.id),
+                            otp_redis_key(job.id, job.execution_generation),
                             serializer.validated_data["code"],
                             ex=max(
                                 1,
@@ -278,7 +285,8 @@ class VerificationCodeSubmitView(APIView):
                             )
                         )
         finally:
-            redis_client.close()
+            if redis_client is not None:
+                redis_client.close()
         return response
 
 

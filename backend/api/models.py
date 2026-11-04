@@ -97,6 +97,30 @@ class AutomationJob(models.Model):
     celery_task_id = models.CharField(max_length=255, blank=True, db_index=True)
     idempotency_key = models.CharField(max_length=128, null=True, blank=True)
     attempt_count = models.PositiveIntegerField(default=0)
+    execution_generation = models.PositiveIntegerField(default=0, db_index=True)
+    application_retry_count = models.PositiveIntegerField(default=0)
+    worker_redelivery_count = models.PositiveIntegerField(default=0)
+    recovery_state = models.CharField(
+        max_length=32,
+        default="none",
+        db_index=True,
+    )
+    recovery_delivery_key = models.CharField(
+        max_length=128,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    recovery_generation = models.PositiveIntegerField(default=0, db_index=True)
+    runner_id = models.UUIDField(null=True, blank=True, db_index=True)
+    runner_pid = models.PositiveIntegerField(null=True, blank=True)
+    runner_start_ticks = models.PositiveBigIntegerField(null=True, blank=True)
+    runner_container_boot_id = models.CharField(max_length=64, blank=True)
+    runner_pgid = models.PositiveIntegerField(null=True, blank=True)
+    runner_profile_path = models.TextField(blank=True)
+    runner_ipc_path = models.TextField(blank=True)
+    runner_state = models.CharField(max_length=32, blank=True, db_index=True)
+    runner_heartbeat_at = models.DateTimeField(null=True, blank=True)
     result = models.JSONField(null=True, blank=True)
     error = models.TextField(blank=True)
     cancel_requested = models.BooleanField(default=False)
@@ -127,4 +151,63 @@ class AutomationJob(models.Model):
                 ),
                 name="one_active_automation_job_per_account",
             ),
+            models.UniqueConstraint(
+                fields=["recovery_delivery_key"],
+                condition=Q(recovery_delivery_key__isnull=False),
+                name="unique_automation_recovery_delivery",
+            ),
         ]
+
+
+class ExecutionRecoveryRecord(models.Model):
+    """Persistent identity and result for one logical execution recovery event."""
+
+    RECOVERY_KIND_WORKER_LOSS = "worker_redelivery"
+
+    job = models.ForeignKey(
+        AutomationJob,
+        on_delete=models.CASCADE,
+        related_name="execution_recovery_records",
+    )
+    failed_generation = models.PositiveIntegerField(db_index=True)
+    recovery_kind = models.CharField(max_length=32, db_index=True)
+    recovery_delivery_key = models.CharField(max_length=128, unique=True)
+    allocated_generation = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "failed_generation", "recovery_kind"],
+                name="unique_job_failed_generation_recovery_kind",
+            ),
+        ]
+
+
+class AccountBrowserLock(models.Model):
+    """Authoritative database lock for an account's persistent browser profile."""
+
+    account = models.OneToOneField(
+        "account.BotAccount",
+        on_delete=models.CASCADE,
+        related_name="browser_lock",
+    )
+    job = models.ForeignKey(
+        AutomationJob,
+        on_delete=models.CASCADE,
+        related_name="browser_locks",
+    )
+    owner_token_hash = models.CharField(max_length=64, editable=False)
+    execution_generation = models.PositiveIntegerField(default=0, db_index=True)
+    runner_id = models.UUIDField(null=True, blank=True, db_index=True)
+    runner_pid = models.PositiveIntegerField(null=True, blank=True)
+    runner_start_ticks = models.PositiveBigIntegerField(null=True, blank=True)
+    runner_container_boot_id = models.CharField(max_length=64, blank=True)
+    runner_pgid = models.PositiveIntegerField(null=True, blank=True)
+    runner_profile_path = models.TextField(blank=True)
+    acquired_at = models.DateTimeField(auto_now_add=True)
+    renewed_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ["-renewed_at"]

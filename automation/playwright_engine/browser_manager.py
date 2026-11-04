@@ -4,7 +4,9 @@ import logging
 import random
 import json
 import os
+import fcntl
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict
 from urllib.parse import urlsplit
 
@@ -43,11 +45,20 @@ class InstagramBrowser:
     Focuses on anti-detection and human-like behavior.
     """
 
-    def __init__(self, headless: bool = True, proxy: Optional[Dict] = None, browser_type: str = "chromium", channel: Optional[str] = None):
-        self.headless = True
+    def __init__(
+        self,
+        headless: bool = True,
+        proxy: Optional[Dict] = None,
+        browser_type: str = "chromium",
+        channel: Optional[str] = None,
+        profile_dir: Optional[str] = None,
+    ):
+        self.headless = headless
         self.proxy = proxy
         self.browser_type = browser_type
         self.channel = channel
+        self.profile_dir = Path(profile_dir) if profile_dir else None
+        self._profile_lock_file = None
         self.playwright = None
         self.browser = None
         self.context = None
@@ -64,6 +75,23 @@ class InstagramBrowser:
         """
         Launch the browser with advanced anti-detection arguments and stealth configuration.
         """
+        if self.profile_dir:
+            self.profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(self.profile_dir, 0o700)
+            lock_dir = self.profile_dir.parent
+            lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(lock_dir, 0o700)
+            lock_path = lock_dir / f".{self.profile_dir.name}.lock"
+            self._profile_lock_file = open(lock_path, "a+")
+            try:
+                fcntl.flock(self._profile_lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                self._profile_lock_file.close()
+                self._profile_lock_file = None
+                raise RuntimeError(
+                    f"Browser profile is already in use: {self.profile_dir}"
+                ) from exc
+
         self.playwright = await async_playwright().start()
         
         # Extended anti-detection arguments for Chromium
@@ -94,6 +122,8 @@ class InstagramBrowser:
             ("firefox", self.playwright.firefox),
             ("webkit", self.playwright.webkit)
         ]
+        if self.profile_dir:
+            attempts = [("chromium", self.playwright.chromium)]
 
         # If a specific browser_type was requested, put it at the start of the list
         if self.browser_type != "chromium":
@@ -120,14 +150,26 @@ class InstagramBrowser:
                     if self.channel:
                         launch_options["channel"] = self.channel
 
-                self.browser = await launcher.launch(**launch_options)
-                logger.info(f"Successfully launched {name}.")
+                if self.profile_dir:
+                    self.context = await launcher.launch_persistent_context(
+                        str(self.profile_dir),
+                        **launch_options,
+                    )
+                    self.browser = self.context.browser
+                    self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+                    logger.info("Successfully launched persistent profile with %s.", name)
+                else:
+                    self.browser = await launcher.launch(**launch_options)
+                    logger.info("Successfully launched %s.", name)
                 break
             except Exception as e:
                 logger.warning(f"Failed to launch {name}: {e}")
                 continue
 
         if not self.browser:
+            if self.playwright:
+                await self.playwright.stop()
+            self._release_profile_lock()
             raise RuntimeError("CRITICAL: Failed to launch any browser engine. "
                              "Please ensure browsers are installed using 'playwright install'")
 
@@ -150,20 +192,21 @@ class InstagramBrowser:
         selected_screen = random.choice(screen_configs)
         selected_ua = random.choice(user_agents)
         
-        # Create context with realistic settings
-        self.context = await self.browser.new_context(
-            user_agent=selected_ua,
-            viewport=selected_screen,
-            screen=selected_screen,
-            locale='en-US',
-            timezone_id='America/New_York',
-            geolocation={'latitude': 40.7128, 'longitude': -74.0060},
-            permissions=['geolocation'],
-            color_scheme='light',
-            device_scale_factor=1,
-            is_mobile=False,
-            has_touch=False,
-        )
+        # Create a fresh context only when no account profile is configured.
+        if not self.profile_dir:
+            self.context = await self.browser.new_context(
+                user_agent=selected_ua,
+                viewport=selected_screen,
+                screen=selected_screen,
+                locale='en-US',
+                timezone_id='America/New_York',
+                geolocation={'latitude': 40.7128, 'longitude': -74.0060},
+                permissions=['geolocation'],
+                color_scheme='light',
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+            )
         
         # Comprehensive stealth scripts to hide automation
         await self.context.add_init_script("""
@@ -258,7 +301,8 @@ class InstagramBrowser:
             });
         """)
 
-        self.page = await self.context.new_page()
+        if not self.profile_dir:
+            self.page = await self.context.new_page()
         
         # Add random mouse movement simulation
         await self._setup_human_behavior()
@@ -335,6 +379,7 @@ class InstagramBrowser:
         cookie_path: Optional[str] = None,
         totp_secret: Optional[str] = None,
         verification_callback=None,
+        cookies: Optional[list] = None,
     ):
         """
         Perform login or load from cookies.
@@ -359,16 +404,22 @@ class InstagramBrowser:
             RuntimeError: If the login page fails to load or 2FA cannot be
                           resolved.
         """
-        if cookie_path and os.path.exists(cookie_path):
+        if cookies is None and cookie_path and os.path.exists(cookie_path):
             try:
                 with open(cookie_path, 'r') as f:
                     cookie_data = json.load(f)
                 cookies = normalize_cookie_data(cookie_data)
                 if cookies is None:
                     logger.warning("Cookie file contained no valid cookies; skipping cookie restoration")
-                else:
-                    await self.context.add_cookies(cookies)
-                    logger.info("Restored %d validated cookies for session login", len(cookies))
+                    cookies = None
+            except Exception as e:
+                logger.warning("Cookie restoration failed; continuing with authenticated-state validation: %s", e)
+                cookies = None
+
+        if cookies:
+            try:
+                await self.context.add_cookies(cookies)
+                logger.info("Restored %d cookies for session login", len(cookies))
             except Exception as e:
                 logger.warning("Cookie restoration failed; continuing with authenticated-state validation: %s", e)
 
@@ -1732,6 +1783,12 @@ class InstagramBrowser:
         except Exception as e:
             logger.error(f"Failed to close modal: {e}")
             return False
+
+    def _release_profile_lock(self):
+        if self._profile_lock_file:
+            fcntl.flock(self._profile_lock_file.fileno(), fcntl.LOCK_UN)
+            self._profile_lock_file.close()
+            self._profile_lock_file = None
 
     async def extract_post_data(self, post_url: str = None) -> Dict:
         """
@@ -4094,8 +4151,13 @@ class InstagramBrowser:
         """
         Clean shutdown of browser.
         """
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+        finally:
+            self._release_profile_lock()
         logger.info("Browser closed.")

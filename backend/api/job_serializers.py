@@ -67,12 +67,23 @@ class AutomationJobCreateSerializer(serializers.Serializer):
         return attrs
 
 
+class StrictExecutionGenerationField(serializers.IntegerField):
+    def to_internal_value(self, data):
+        if type(data) is not int:
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
 class VerificationCodeSubmitSerializer(serializers.Serializer):
     code = serializers.RegexField(
         regex=r"^\d{4,10}$",
         max_length=10,
         trim_whitespace=True,
         write_only=True,
+    )
+    execution_generation = StrictExecutionGenerationField(
+        min_value=0,
+        required=True,
     )
 
 
@@ -89,6 +100,7 @@ class AutomationJobStatusSerializer(serializers.ModelSerializer):
             "action",
             "status",
             "attempt_count",
+            "execution_generation",
             "result",
             "error",
             "cancel_requested",

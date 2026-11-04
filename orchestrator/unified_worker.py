@@ -88,10 +88,17 @@ class UnifiedWorker:
         self,
         account_id: int,
         api_client: InstaApiClient = None,
-        headless: bool = True
+        headless: bool = True,
+        job_id: str = None,
+        lock_owner_token: str = None,
+        execution_generation: int = None,
     ):
         self.account_id = account_id
-        self.api_client = api_client or InstaApiClient()
+        self.api_client = api_client or InstaApiClient(
+            job_id=job_id,
+            lock_owner_token=lock_owner_token,
+            execution_generation=execution_generation,
+        )
         self.headless = headless
         
         self.session_id: Optional[int] = None

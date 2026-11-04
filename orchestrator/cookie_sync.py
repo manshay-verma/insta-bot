@@ -10,7 +10,8 @@ import os
 import logging
 from typing import Optional, List, Dict, Any
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+import time
 
 from .api_client import InstaApiClient
 
@@ -63,6 +64,7 @@ class CookieSync:
         
         # Ensure cookie directory exists
         self.cookie_dir.mkdir(parents=True, exist_ok=True)
+        self.cookie_version = 0
     
     @property
     def cookie_file_path(self) -> Path:
@@ -86,10 +88,20 @@ class CookieSync:
                 return None
             
             cookies = response.data.get("cookies_json")
+            self.cookie_version = response.data.get("cookie_version", 0)
             
             if cookies:
-                logger.info(f"Loaded {len(cookies)} cookies from backend for account {self.account_id}")
-                return cookies
+                normalized = self.normalize_cookie_data(cookies)
+                if normalized is not None and self.validate_cookie_list(normalized, allow_expired=True):
+                    if not self.validate_cookie_list(normalized, allow_expired=False):
+                        self.api_client.update_session_status(self.account_id, "expired")
+                        logger.warning("Backend cookies for account %s are expired", self.account_id)
+                        return None
+                    logger.info("Loaded %d validated cookies for account %s", len(normalized), self.account_id)
+                    return normalized
+                self.api_client.update_session_status(self.account_id, "invalid")
+                logger.warning("Backend cookies for account %s are malformed or invalid", self.account_id)
+                return None
             else:
                 logger.info(f"No cookies found in backend for account {self.account_id}")
                 return None
@@ -109,9 +121,18 @@ class CookieSync:
             True if saved successfully
         """
         try:
-            response = self.api_client.update_cookies(self.account_id, cookies)
+            normalized = self.normalize_cookie_data(cookies)
+            if normalized is None or not self.validate_cookie_list(normalized, allow_expired=False):
+                logger.warning("Cookie synchronization skipped for account %s: invalid cookie collection", self.account_id)
+                return False
+            response = self.api_client.update_cookies(
+                self.account_id,
+                normalized,
+                expected_version=self.cookie_version,
+            )
             
             if response.success:
+                self.cookie_version = response.data.get("cookie_version", self.cookie_version)
                 logger.info(f"Saved {len(cookies)} cookies to backend for account {self.account_id}")
                 return True
             else:
@@ -274,13 +295,17 @@ class CookieSync:
         
         if browser_cookies:
             results["backend"] = self.save_to_backend(browser_cookies)
-            results["file"] = self.export_to_file(browser_cookies)
+            results["file"] = False
         
         return results
     
     # ==================== Validation ====================
     
     def validate_cookies(self, cookies: List[Dict]) -> bool:
+        return self.validate_cookie_list(cookies, allow_expired=False)
+
+    @staticmethod
+    def validate_cookie_list(cookies: List[Dict], allow_expired: bool = False) -> bool:
         """
         Validate cookie structure.
         
@@ -300,6 +325,18 @@ class CookieSync:
                 return False
             if not required_keys.issubset(cookie.keys()):
                 return False
+            if not isinstance(cookie.get("name"), str) or not cookie["name"]:
+                return False
+            if not isinstance(cookie.get("value"), (str, int, float)):
+                return False
+            domain = str(cookie["domain"]).lower()
+            if domain not in ("instagram.com", ".instagram.com") and not domain.endswith(".instagram.com"):
+                return False
+            if not allow_expired:
+                expires = cookie.get("expires")
+                if isinstance(expires, (int, float)) and expires > 0:
+                    if expires <= time.time():
+                        return False
         
         # Check for Instagram-specific cookies
         cookie_names = {c.get("name") for c in cookies}

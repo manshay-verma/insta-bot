@@ -166,6 +166,7 @@ class TaskStatusResponseSchema(serializers.Serializer):
     action = serializers.CharField()
     status = serializers.CharField()
     attempt_count = serializers.IntegerField()
+    execution_generation = serializers.IntegerField(min_value=0)
     result = serializers.JSONField(allow_null=True, required=False)
     error = serializers.CharField(allow_blank=True)
     cancel_requested = serializers.BooleanField()
@@ -177,6 +178,7 @@ class TaskStatusResponseSchema(serializers.Serializer):
 
 class VerificationCodeSubmitRequestSchema(serializers.Serializer):
     code = serializers.RegexField(regex=r"^\d{4,10}$", max_length=10)
+    execution_generation = serializers.IntegerField(min_value=0)
 
 
 class VerificationCodeSubmitResponseSchema(serializers.Serializer):

@@ -37,6 +37,14 @@ class BotAccount(models.Model):
         ('checkpoint', 'Checkpoint'),
         ('inactive', 'Inactive'),
     ]
+    SESSION_STATUS_CHOICES = [
+        ('missing', 'Missing'),
+        ('login_required', 'Login required'),
+        ('valid', 'Valid'),
+        ('expired', 'Expired'),
+        ('invalid', 'Invalid'),
+        ('verification_required', 'Verification required'),
+    ]
 
     username = models.CharField(max_length=50, unique=True)
     owner = models.ForeignKey(
@@ -57,6 +65,16 @@ class BotAccount(models.Model):
         related_name='accounts'
     )
     cookies_json = models.JSONField(null=True, blank=True, help_text="Session cookies")
+    cookies_encrypted = models.TextField(null=True, blank=True, help_text="Encrypted session cookies")
+    session_status = models.CharField(
+        max_length=24,
+        choices=SESSION_STATUS_CHOICES,
+        default='missing',
+        db_index=True,
+    )
+    cookie_version = models.PositiveIntegerField(default=0)
+    cookie_updated_at = models.DateTimeField(null=True, blank=True)
+    cookie_validated_at = models.DateTimeField(null=True, blank=True)
     last_login = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

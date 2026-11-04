@@ -30,7 +30,19 @@ class BotAccountSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         request = self.context.get("request")
         if request and getattr(request, "auth", None) == "worker":
-            data["cookies_json"] = instance.cookies_json
+            from .utils import decrypt_cookie_data
+
+            cookies = None
+            if instance.cookies_encrypted:
+                try:
+                    cookies = decrypt_cookie_data(instance.cookies_encrypted)
+                except Exception:
+                    cookies = None
+            elif instance.cookies_json:
+                cookies = instance.cookies_json
+            data["cookies_json"] = cookies
+            data["session_status"] = instance.session_status
+            data["cookie_version"] = instance.cookie_version
             data["proxy"] = (
                 {
                     "protocol": instance.proxy.protocol,
