@@ -11,6 +11,7 @@ from asgiref.sync import sync_to_async
 from redis import asyncio as redis_async
 
 from .models import AutomationJob
+from .logging import log_structured
 from .account_locks import (
     AccountLockBusy,
     AccountLockOwnershipError,
@@ -219,15 +220,21 @@ def execute_automation_job(
                     runner_identity_confirmed=runner_identity_confirmed,
                 )
             except ExecutionGenerationError as exc:
-                logger.warning(
-                    "Execution recovery rejected",
-                    extra={"job_id": str(job.id), "error_type": type(exc).__name__},
+                log_structured(
+                    logger, logging.WARNING, "recovery_rejected",
+                    "Execution recovery rejected (generation mismatch)",
+                    job_id=str(job.id), account_id=job.account_id,
+                    execution_generation=execution_generation,
+                    error_type=type(exc).__name__,
                 )
                 return {"job_id": str(job.id), "status": job.status, "recovery_rejected": True}
             except AccountLockOwnershipError as exc:
-                logger.warning(
+                log_structured(
+                    logger, logging.WARNING, "recovery_rejected",
                     "Execution recovery ownership rejected",
-                    extra={"job_id": str(job.id), "error_type": type(exc).__name__},
+                    job_id=str(job.id), account_id=job.account_id,
+                    execution_generation=execution_generation,
+                    error_type=type(exc).__name__,
                 )
                 return {"job_id": str(job.id), "status": job.status, "recovery_rejected": True}
 
@@ -312,14 +319,13 @@ def execute_automation_job(
                 str(exc),
                 execution_generation=job.execution_generation,
             )
-            logger.warning(
-                "automation job could not acquire its account lock",
-                extra={
-                    "job_id": str(job.id),
-                    "task_id": self.request.id,
-                    "account_id": job.account_id,
-                    "error_type": type(exc).__name__,
-                },
+            log_structured(
+                logger, logging.WARNING, "lock_acquire_failed",
+                "Automation job could not acquire its account lock",
+                job_id=str(job.id), account_id=job.account_id,
+                execution_generation=job.execution_generation,
+                error_type=type(exc).__name__,
+                task_id=self.request.id,
             )
             return {"job_id": str(job.id), "status": AutomationJob.Status.FAILED}
 
@@ -345,6 +351,16 @@ def execute_automation_job(
         )
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+        log_structured(
+            logger, logging.INFO, "job_started",
+            "Automation job starting execution",
+            job_id=str(job.id), account_id=job.account_id,
+            execution_generation=execution_generation,
+            action=job.action,
+            attempt_count=job.attempt_count,
+            task_id=self.request.id,
+        )
 
         async def run_job():
             from orchestrator.runner_supervisor import BrowserRunnerSupervisor
@@ -411,13 +427,12 @@ def execute_automation_job(
         with transaction.atomic():
             current = AutomationJob.objects.select_for_update().get(id=job.id)
             if getattr(current, "execution_generation", execution_generation) != execution_generation:
-                logger.warning(
+                log_structured(
+                    logger, logging.WARNING, "stale_generation_rejected",
                     "Stale execution result rejected",
-                    extra={
-                        "job_id": str(job.id),
-                        "execution_generation": execution_generation,
-                        "current_generation": current.execution_generation,
-                    },
+                    job_id=str(job.id),
+                    execution_generation=execution_generation,
+                    current_generation=current.execution_generation,
                 )
                 return {"job_id": str(job.id), "status": current.status, "stale_generation": True}
             if current.cancel_requested:
@@ -442,16 +457,15 @@ def execute_automation_job(
                     "updated_at",
                 ]
             )
-        logger.info(
-            "automation job finished",
-            extra={
-                "job_id": str(job.id),
-                "task_id": self.request.id,
-                "account_id": job.account_id,
-                "action": job.action,
-                "attempt": job.attempt_count,
-                "status": current.status,
-            },
+        log_structured(
+            logger, logging.INFO, "job_finished",
+            "Automation job finished",
+            job_id=str(job.id), account_id=job.account_id,
+            execution_generation=execution_generation,
+            status=current.status,
+            action=job.action,
+            attempt_count=job.attempt_count,
+            task_id=self.request.id,
         )
         return {"job_id": str(job.id), "status": current.status, **summary}
     except Exception as exc:
@@ -478,6 +492,14 @@ def execute_automation_job(
             job.status = AutomationJob.Status.RETRYING
             job.error = f"Transient worker failure ({type(exc).__name__}); retry scheduled."
             job.save(update_fields=["status", "error", "updated_at"])
+            log_structured(
+                logger, logging.WARNING, "job_retry_scheduled",
+                "Automation job scheduled for retry",
+                job_id=str(job.id), account_id=job.account_id,
+                execution_generation=execution_generation,
+                retry_count=self.request.retries,
+                error_type=type(exc).__name__,
+            )
             raise self.retry(
                 exc=exc,
                 countdown=min(30, 2 ** (self.request.retries + 1)),
@@ -497,15 +519,15 @@ def execute_automation_job(
                 f"Worker execution failed ({type(exc).__name__}).",
                 execution_generation=execution_generation,
             )
-        logger.error(
-            "automation job execution raised an exception",
-            extra={
-                "job_id": str(job.id) if job else str(job_id),
-                "task_id": self.request.id,
-                "account_id": job.account_id if job else None,
-                "action": job.action if job else None,
-                "error_type": type(exc).__name__,
-            },
+        log_structured(
+            logger, logging.ERROR, "job_execution_failed",
+            "Automation job execution raised an exception",
+            job_id=str(job.id) if job else str(job_id),
+            account_id=job.account_id if job else None,
+            execution_generation=execution_generation,
+            error_type=type(exc).__name__,
+            action=job.action if job else None,
+            task_id=self.request.id,
         )
         raise
     finally:

@@ -206,3 +206,41 @@ AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', 'instabot-me
 AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
 AWS_S3_SIGNATURE_VERSION = 's3v4'
 
+# Logging Configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'sensitive_data_filter': {
+            '()': 'api.logging.SensitiveDataFilter',
+        },
+    },
+    'formatters': {
+        'structured': {
+            '()': 'api.logging.StructuredJsonFormatter',
+        },
+        'standard': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+            'filters': ['sensitive_data_filter'],
+        },
+    },
+    'loggers': {
+        'api': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'orchestrator': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+

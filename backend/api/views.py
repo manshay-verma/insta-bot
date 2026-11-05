@@ -613,3 +613,33 @@ class RateLimitStatusView(APIView):
                 )
         
         return Response({'limits': limits})
+
+
+class DetailedHealthCheckView(APIView):
+    """
+    D1.5 — Detailed component-level health check.
+    Returns health for PostgreSQL, Redis, Celery worker, and browser runners.
+    Health-check failures MUST NOT trigger recovery actions.
+
+    HTTP status codes:
+      200 — healthy
+      207 — degraded (some components unhealthy but service functional)
+      503 — unavailable (critical dependency down)
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .health import get_overall_health
+
+        health = get_overall_health()
+        overall = health.get("status", "unavailable")
+
+        if overall == "healthy":
+            http_status = status.HTTP_200_OK
+        elif overall == "degraded":
+            http_status = 207  # Multi-Status
+        else:
+            http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+
+        return Response(health, status=http_status)

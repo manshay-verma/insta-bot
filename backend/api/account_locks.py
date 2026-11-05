@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
@@ -9,6 +10,9 @@ from django.utils import timezone
 
 from account.models import BotAccount
 from .models import AccountBrowserLock, AutomationJob, ExecutionRecoveryRecord
+from .logging import log_structured
+
+logger = logging.getLogger(__name__)
 
 
 LOCK_TTL_SECONDS = 30 * 60
@@ -141,7 +145,9 @@ def resolve_execution_recovery(
                 "The requested execution generation is stale."
             )
 
-    if owner_token is not None or source == "worker_redelivery":
+    if owner_token is not None or (
+        source == "worker_redelivery" and job.recovery_state != "prepared_recovery"
+    ):
         if owner_token is None:
             raise AccountLockOwnershipError(
                 "A confirmed runner lock owner token is required."
@@ -236,7 +242,7 @@ def resolve_execution_recovery(
         )
         raise ExecutionGenerationError("The verification challenge expired.")
 
-    if source == "worker_redelivery":
+    if source in {"worker_redelivery", "prepared_recovery"}:
         recovery_record = (
             ExecutionRecoveryRecord.objects.select_for_update()
             .filter(
@@ -263,6 +269,30 @@ def resolve_execution_recovery(
                     worker_redelivery_count=job.worker_redelivery_count,
                     application_retry_count=job.application_retry_count,
                 )
+            if (
+                job.status == AutomationJob.Status.QUEUED
+                and job.recovery_state == "prepared_recovery"
+            ):
+                job.status = AutomationJob.Status.RUNNING
+                job.recovery_state = "executing"
+                job.started_at = job.started_at or now
+                job.attempt_count += 1
+                job.save(
+                    update_fields=[
+                        "status",
+                        "recovery_state",
+                        "started_at",
+                        "attempt_count",
+                        "updated_at",
+                    ]
+                )
+                return ExecutionRecoveryDecision(
+                    action="start_prepared_generation",
+                    execution_generation=recovery_record.allocated_generation,
+                    delivery_key=delivery_key,
+                    worker_redelivery_count=job.worker_redelivery_count,
+                    application_retry_count=job.application_retry_count,
+                )
             return ExecutionRecoveryDecision(
                 action="duplicate_delivery",
                 execution_generation=recovery_record.allocated_generation,
@@ -283,6 +313,30 @@ def resolve_execution_recovery(
                 )
             return ExecutionRecoveryDecision(
                 action="resume_prepared_generation",
+                execution_generation=job.execution_generation,
+                delivery_key=delivery_key,
+                worker_redelivery_count=job.worker_redelivery_count,
+                application_retry_count=job.application_retry_count,
+            )
+        if (
+            job.status == AutomationJob.Status.QUEUED
+            and job.recovery_state == "prepared_recovery"
+        ):
+            job.status = AutomationJob.Status.RUNNING
+            job.recovery_state = "executing"
+            job.started_at = job.started_at or now
+            job.attempt_count += 1
+            job.save(
+                update_fields=[
+                    "status",
+                    "recovery_state",
+                    "started_at",
+                    "attempt_count",
+                    "updated_at",
+                ]
+            )
+            return ExecutionRecoveryDecision(
+                action="start_prepared_generation",
                 execution_generation=job.execution_generation,
                 delivery_key=delivery_key,
                 worker_redelivery_count=job.worker_redelivery_count,
@@ -391,6 +445,150 @@ def resolve_execution_recovery(
 
 
 @transaction.atomic
+def prepare_worker_loss_recovery(*, job_id):
+    """
+    Authoritatively prepare a worker-loss recovery in PostgreSQL.
+    Idempotent: if recovery is already prepared for the current/failed generation,
+    returns the existing decision without re-allocating a generation or re-incrementing counters.
+    """
+    job = AutomationJob.objects.select_for_update().get(id=job_id)
+    if job.status in {
+        AutomationJob.Status.SUCCEEDED,
+        AutomationJob.Status.FAILED,
+        AutomationJob.Status.CANCELLED,
+    }:
+        return None
+    if job.cancel_requested:
+        job.status = AutomationJob.Status.CANCELLED
+        job.completed_at = timezone.now()
+        job.recovery_state = "cancelled"
+        job.save(
+            update_fields=[
+                "status",
+                "completed_at",
+                "recovery_state",
+                "updated_at",
+            ]
+        )
+        return None
+
+    failed_generation = job.execution_generation
+    delivery_key = build_worker_recovery_delivery_key(
+        job_id=job.id,
+        failed_generation=failed_generation,
+    )
+
+    existing_record = (
+        ExecutionRecoveryRecord.objects.select_for_update()
+        .filter(
+            job=job,
+            failed_generation=failed_generation,
+            recovery_kind="worker_redelivery",
+        )
+        .first()
+    )
+
+    if existing_record is not None:
+        if job.status not in {
+            AutomationJob.Status.QUEUED,
+            AutomationJob.Status.RUNNING,
+        }:
+            job.status = AutomationJob.Status.QUEUED
+        job.recovery_delivery_key = existing_record.recovery_delivery_key
+        job.recovery_generation = existing_record.allocated_generation
+        job.recovery_state = "prepared_recovery"
+        job.save(
+            update_fields=[
+                "status",
+                "recovery_delivery_key",
+                "recovery_generation",
+                "recovery_state",
+                "updated_at",
+            ]
+        )
+        return ExecutionRecoveryDecision(
+            action="resume_prepared_generation",
+            execution_generation=existing_record.allocated_generation,
+            delivery_key=existing_record.recovery_delivery_key,
+            worker_redelivery_count=job.worker_redelivery_count,
+            application_retry_count=job.application_retry_count,
+        )
+
+    if job.worker_redelivery_count >= MAX_WORKER_LOSS_REDELIVERIES:
+        job.status = AutomationJob.Status.FAILED
+        job.error = "Worker loss limit exceeded."
+        job.completed_at = timezone.now()
+        job.recovery_state = "worker_loss_limit"
+        job.save(
+            update_fields=[
+                "status",
+                "error",
+                "completed_at",
+                "recovery_state",
+                "updated_at",
+            ]
+        )
+        return ExecutionRecoveryDecision(
+            action="worker_loss_limit",
+            execution_generation=job.execution_generation,
+            delivery_key=delivery_key,
+            worker_redelivery_count=job.worker_redelivery_count,
+            application_retry_count=job.application_retry_count,
+        )
+
+    new_generation = failed_generation + 1
+    job.worker_redelivery_count += 1
+    job.execution_generation = new_generation
+    job.recovery_delivery_key = delivery_key
+    job.recovery_generation = new_generation
+    job.recovery_state = "prepared_recovery"
+    job.status = AutomationJob.Status.QUEUED
+    job.runner_id = None
+    job.runner_pid = None
+    job.runner_start_ticks = None
+    job.runner_container_boot_id = ""
+    job.runner_pgid = None
+    job.runner_profile_path = ""
+    job.runner_ipc_path = ""
+    job.runner_state = ""
+    job.runner_heartbeat_at = None
+    job.save(
+        update_fields=[
+            "worker_redelivery_count",
+            "execution_generation",
+            "recovery_delivery_key",
+            "recovery_generation",
+            "recovery_state",
+            "status",
+            "runner_id",
+            "runner_pid",
+            "runner_start_ticks",
+            "runner_container_boot_id",
+            "runner_pgid",
+            "runner_profile_path",
+            "runner_ipc_path",
+            "runner_state",
+            "runner_heartbeat_at",
+            "updated_at",
+        ]
+    )
+    ExecutionRecoveryRecord.objects.create(
+        job=job,
+        failed_generation=failed_generation,
+        recovery_kind="worker_redelivery",
+        recovery_delivery_key=delivery_key,
+        allocated_generation=new_generation,
+    )
+    return ExecutionRecoveryDecision(
+        action="start_new_generation",
+        execution_generation=new_generation,
+        delivery_key=delivery_key,
+        worker_redelivery_count=job.worker_redelivery_count,
+        application_retry_count=job.application_retry_count,
+    )
+
+
+@transaction.atomic
 def register_browser_runner(
     *,
     account_id,
@@ -467,6 +665,17 @@ def register_browser_runner(
         "runner_heartbeat_at",
         "updated_at",
     ])
+    log_structured(
+        logger,
+        logging.INFO,
+        "runner_registered",
+        f"Registered browser runner {runner_id} (PID {runner_pid})",
+        job_id=job_id,
+        account_id=account_id,
+        execution_generation=execution_generation,
+        runner_id=runner_id,
+        runner_pid=runner_pid,
+    )
     return True
 
 
@@ -596,13 +805,40 @@ def acquire_account_lock(
             ):
                 lock.expires_at = expires_at
                 lock.save(update_fields=["renewed_at", "expires_at"])
+                log_structured(
+                    logger,
+                    logging.INFO,
+                    "lock_acquired",
+                    f"Account lock renewed/acquired for account {account_id}",
+                    job_id=job_id,
+                    account_id=account_id,
+                    execution_generation=lock.execution_generation,
+                )
                 return AccountLock(
                     owner_token=owner_token,
                     expires_at=expires_at,
                     execution_generation=lock.execution_generation,
                 )
+            log_structured(
+                logger,
+                logging.WARNING,
+                "lock_busy",
+                f"Account lock busy for account {account_id}",
+                job_id=job_id,
+                account_id=account_id,
+                execution_generation=execution_generation,
+            )
             raise AccountLockBusy("Another job owns this account browser profile.")
         if lock.execution_generation == job.execution_generation:
+            log_structured(
+                logger,
+                logging.WARNING,
+                "lock_busy",
+                f"Account lock expired without runner termination for account {account_id}",
+                job_id=job_id,
+                account_id=account_id,
+                execution_generation=execution_generation,
+            )
             raise AccountLockBusy(
                 "The account lock lease expired without confirmed runner termination."
             )
@@ -615,6 +851,15 @@ def acquire_account_lock(
         owner_token_hash=hash_owner_token(owner_token),
         execution_generation=job.execution_generation,
         expires_at=expires_at,
+    )
+    log_structured(
+        logger,
+        logging.INFO,
+        "lock_acquired",
+        f"Account lock acquired for account {account_id}",
+        job_id=job_id,
+        account_id=account_id,
+        execution_generation=lock.execution_generation,
     )
     return AccountLock(
         owner_token=owner_token,
@@ -722,12 +967,22 @@ def release_account_lock(*, account_id, job_id, owner_token, execution_generatio
             container_boot_id=lock.runner_container_boot_id,
             pgid=lock.runner_pgid,
             execution_generation=execution_generation,
-            job_id=str(job.id),
+            job_id=str(lock.job_id),
             profile_path=lock.runner_profile_path,
         )
         if validate_live_process(identity):
             raise AccountLockOwnershipError(
                 "The browser runner must be positively terminated before lock release."
             )
+    log_structured(
+        logger,
+        logging.INFO,
+        "lock_released",
+        f"Account lock released for account {account_id}",
+        job_id=job_id,
+        account_id=account_id,
+        execution_generation=execution_generation,
+        runner_id=str(lock.runner_id) if lock.runner_id else None,
+    )
     lock.delete()
     return True

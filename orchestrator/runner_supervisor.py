@@ -71,7 +71,6 @@ class BrowserRunnerSupervisor:
                 profile_path=self.profile_path,
             )
         self.process = None
-        self.identity = None
         self._reader = None
         self._writer = None
         self._connected = False

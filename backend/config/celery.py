@@ -15,6 +15,21 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 # Load task modules from all registered Django apps.
 app.autodiscover_tasks()
 
+from celery import bootsteps
+import logging
+
+_celery_logger = logging.getLogger(__name__)
+
+class StartupReconciliationStep(bootsteps.StartStopStep):
+    requires = {"celery.worker.consumer.tasks:Tasks"}
+
+    def start(self, consumer):
+        _celery_logger.info("StartupReconciliationStep: Reconciling jobs before consumer loop...")
+        from api.reconciliation import reconcile_startup_jobs
+        reconcile_startup_jobs(blocking=True)
+
+app.steps["consumer"].add(StartupReconciliationStep)
+
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     print(f'Request: {self.request!r}')
