@@ -217,13 +217,15 @@ class TestRunnerHealth(TestCase):
         self.user = User.objects.create_user(username="health_test_user", password="test")
 
     def _make_job(self, **kwargs):
-        from api.models import BotAccount, AutomationJob
+        from account.models import BotAccount
+        from api.models import AutomationJob
         account = BotAccount.objects.create(
             owner=self.user,
             username=f"health_ig_{uuid.uuid4().hex[:8]}",
             password_encrypted="encrypted",
         )
         return AutomationJob.objects.create(
+            user=self.user,
             account=account,
             action="like",
             targets=["https://instagram.com/p/test/"],
@@ -522,7 +524,8 @@ class TestReconciliationMetrics(TestCase):
 
     def test_reconcile_metrics_with_terminal_job(self):
         """A SUCCEEDED job should be counted as noop_terminal."""
-        from api.models import BotAccount, AutomationJob
+        from account.models import BotAccount
+        from api.models import AutomationJob
         from api.reconciliation import reconcile_startup_jobs
         account = BotAccount.objects.create(
             owner=self.user,
@@ -530,6 +533,7 @@ class TestReconciliationMetrics(TestCase):
             password_encrypted="encrypted",
         )
         AutomationJob.objects.create(
+            user=self.user,
             account=account,
             action="like",
             targets=["https://instagram.com/p/test/"],
@@ -544,7 +548,8 @@ class TestReconciliationMetrics(TestCase):
 
     def test_reconcile_metrics_with_queued_job_in_redis(self):
         """A QUEUED job with task present in Redis returns queued_task_healthy."""
-        from api.models import BotAccount, AutomationJob
+        from account.models import BotAccount
+        from api.models import AutomationJob
         from api.reconciliation import reconcile_startup_jobs
         account = BotAccount.objects.create(
             owner=self.user,
@@ -553,6 +558,7 @@ class TestReconciliationMetrics(TestCase):
         )
         task_id = str(uuid.uuid4())
         job = AutomationJob.objects.create(
+            user=self.user,
             account=account,
             action="like",
             targets=["https://instagram.com/p/test/"],
@@ -563,4 +569,266 @@ class TestReconciliationMetrics(TestCase):
             result = reconcile_startup_jobs(blocking=False)
         counts = result.get("action_counts", {})
         self.assertGreaterEqual(counts.get("queued_task_healthy", 0), 1)
+
+
+def _healthy_components():
+    return {
+        "database": {"status": "healthy"},
+        "redis": {"status": "healthy"},
+        "celery": {"status": "healthy"},
+        "runners": {"status": "healthy"},
+    }
+
+
+class TestHealthAggregation(TestCase):
+
+    def test_all_healthy_components_are_healthy(self):
+        from api.health import aggregate_component_status
+        self.assertEqual(aggregate_component_status(_healthy_components()), "healthy")
+
+    def test_database_unavailable_is_unavailable(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        components["database"] = {"status": "unavailable"}
+        self.assertEqual(aggregate_component_status(components), "unavailable")
+
+    def test_redis_unavailable_is_unavailable(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        components["redis"] = {"status": "unavailable"}
+        self.assertEqual(aggregate_component_status(components), "unavailable")
+
+    def test_degraded_celery_is_not_healthy(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        components["celery"] = {"status": "degraded", "active_tasks": None}
+        self.assertEqual(aggregate_component_status(components), "degraded")
+
+    def test_unavailable_runners_are_not_healthy(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        components["runners"] = {"status": "unavailable", "runners": []}
+        self.assertEqual(aggregate_component_status(components), "degraded")
+
+    def test_unknown_component_is_not_healthy(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        components["runners"] = {"status": "unknown"}
+        self.assertEqual(aggregate_component_status(components), "degraded")
+
+    def test_missing_component_is_unavailable(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        del components["runners"]
+        self.assertEqual(aggregate_component_status(components), "unavailable")
+
+    def test_missing_dead_count_is_not_treated_as_zero(self):
+        from api.health import aggregate_component_status
+        components = _healthy_components()
+        components["runners"] = {"runners": []}
+        self.assertEqual(aggregate_component_status(components), "unavailable")
+
+
+class TestRunnerHealthWithoutProcessInspection(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="runner_unknown_user", password="test")
+
+    def _make_running_job(self, **kwargs):
+        from account.models import BotAccount
+        from api.models import AutomationJob
+        account = BotAccount.objects.create(
+            owner=self.user,
+            username=f"unknown_ig_{uuid.uuid4().hex[:8]}",
+            password_encrypted="encrypted",
+        )
+        defaults = {
+            "runner_pid": 4242,
+            "runner_start_ticks": 10,
+            "runner_pgid": 4242,
+            "runner_container_boot_id": "boot",
+            "runner_profile_path": "/tmp/test_profile",
+            "runner_id": uuid.uuid4(),
+            "runner_heartbeat_at": timezone.now(),
+        }
+        defaults.update(kwargs)
+        return AutomationJob.objects.create(
+            user=self.user,
+            account=account,
+            action="like",
+            targets=["https://instagram.com/p/test/"],
+            status=AutomationJob.Status.RUNNING,
+            **defaults,
+        )
+
+    def test_no_rows_stay_healthy_when_process_inspection_is_unavailable(self):
+        from api.health import get_active_runner_health
+        with patch("api.health._load_runner_process_validator", return_value=(None, None)):
+            result = get_active_runner_health()
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(result["process_inspection"], "unavailable")
+        self.assertEqual(result["runner_count"], 0)
+        self.assertEqual(result["dead_count"], 0)
+        self.assertEqual(result["unknown_count"], 0)
+
+    def test_recorded_runner_is_unknown_without_process_inspection(self):
+        from api.health import get_active_runner_health
+        job = self._make_running_job()
+        with patch("api.health._load_runner_process_validator", return_value=(None, None)):
+            result = get_active_runner_health()
+        entry = next(item for item in result["runners"] if item["job_id"] == str(job.id))
+        self.assertEqual(entry["runner_status"], "unknown")
+        self.assertFalse(entry["process_verified"])
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["unknown_count"], 1)
+        self.assertEqual(result["dead_count"], 0)
+
+    def test_stale_heartbeat_is_reported_from_postgresql_without_process_inspection(self):
+        from api.health import get_active_runner_health
+        job = self._make_running_job(runner_heartbeat_at=timezone.now() - timedelta(minutes=15))
+        with patch("api.health._load_runner_process_validator", return_value=(None, None)):
+            result = get_active_runner_health()
+        entry = next(item for item in result["runners"] if item["job_id"] == str(job.id))
+        self.assertEqual(entry["runner_status"], "stale")
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["stale_count"], 1)
+
+
+class TestCeleryTaskStates(TestCase):
+
+    def _inspect(self, ping, active=None, reserved=None, scheduled=None):
+        inspect = MagicMock()
+        inspect.ping.return_value = ping
+        inspect.active.return_value = active
+        inspect.reserved.return_value = reserved
+        inspect.scheduled.return_value = scheduled
+        return inspect
+
+    def test_worker_states_are_separate_from_broker_counts(self):
+        from api.health import check_celery_health
+        inspect = self._inspect(
+            {"worker-a": {"ok": "pong"}},
+            active={"worker-a": [{"id": "active-1"}]},
+            reserved={"worker-a": [{"id": "reserved-1"}, {"id": "reserved-2"}]},
+            scheduled={"worker-a": []},
+        )
+        broker = {"broker_queue": "celery", "broker_queued": 4, "unacknowledged_tasks": 1}
+        with patch("config.celery.app.control.inspect", return_value=inspect):
+            with patch("api.health.measure_broker_task_counts", return_value=broker):
+                result = check_celery_health()
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(result["active_tasks"], 1)
+        self.assertEqual(result["reserved_tasks"], 2)
+        self.assertEqual(result["scheduled_tasks"], 0)
+        self.assertEqual(result["broker_queued"], 4)
+        self.assertEqual(result["unacknowledged_tasks"], 1)
+        self.assertEqual(result["queue_depth"], 4)
+
+    def test_missing_inspect_snapshot_is_unknown_not_zero(self):
+        from api.health import check_celery_health
+        inspect = self._inspect({"worker-a": {"ok": "pong"}}, active=None, reserved=None, scheduled=None)
+        broker = {"broker_queue": "celery", "broker_queued": 0, "unacknowledged_tasks": 0}
+        with patch("config.celery.app.control.inspect", return_value=inspect):
+            with patch("api.health.measure_broker_task_counts", return_value=broker):
+                result = check_celery_health()
+        self.assertEqual(result["status"], "degraded")
+        self.assertIsNone(result["active_tasks"])
+        self.assertIsNone(result["reserved_tasks"])
+        self.assertIsNone(result["scheduled_tasks"])
+        self.assertEqual(result["broker_queued"], 0)
+
+    def test_no_worker_does_not_turn_unknown_states_into_zero(self):
+        from api.health import check_celery_health
+        inspect = self._inspect(None)
+        broker = {"broker_queue": "celery", "broker_queued": 3, "unacknowledged_tasks": None}
+        with patch("config.celery.app.control.inspect", return_value=inspect):
+            with patch("api.health.measure_broker_task_counts", return_value=broker):
+                result = check_celery_health()
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["worker_count"], 0)
+        self.assertIsNone(result["active_tasks"])
+        self.assertIsNone(result["reserved_tasks"])
+        self.assertIsNone(result["scheduled_tasks"])
+        self.assertEqual(result["broker_queued"], 3)
+        self.assertIsNone(result["unacknowledged_tasks"])
+
+    def test_non_redis_transport_does_not_invent_broker_counts(self):
+        from api.health import measure_broker_task_counts
+        with patch("api.health._broker_url", return_value="amqp://guest:guest@rabbitmq:5672//"):
+            result = measure_broker_task_counts()
+        self.assertIsNone(result["broker_queued"])
+        self.assertIsNone(result["unacknowledged_tasks"])
+
+    def test_unexpected_unacked_type_is_unknown(self):
+        from api.health import measure_broker_task_counts
+
+        class FakeRedis:
+            def exists(self, key):
+                return True
+
+            def type(self, key):
+                if key == "unacked":
+                    return "string"
+                return "list"
+
+            def llen(self, key):
+                return 2
+
+            def hlen(self, key):
+                return 9
+
+            def close(self):
+                pass
+
+        with patch("api.health._redis_client", return_value=FakeRedis()):
+            with patch("api.health._broker_url", return_value="redis://redis:6379/0"):
+                result = measure_broker_task_counts()
+        self.assertEqual(result["broker_queued"], 2 * 4)
+        self.assertIsNone(result["unacknowledged_tasks"])
+
+
+class TestLoggingConfiguration(TestCase):
+
+    def test_every_handler_uses_structured_json_and_redaction(self):
+        from django.conf import settings
+        handlers = settings.LOGGING["handlers"]
+        self.assertTrue(handlers)
+        for name, handler in handlers.items():
+            self.assertEqual(handler.get("formatter"), "structured", name)
+            self.assertIn("sensitive_data_filter", handler.get("filters", []), name)
+
+    def test_configured_handler_preserves_identifiers_and_redacts_secrets(self):
+        from django.conf import settings
+        from django.utils.module_loading import import_string
+
+        stream = StringIO()
+        formatter = import_string(settings.LOGGING["formatters"]["structured"]["()"])()
+        redaction_filter = import_string(settings.LOGGING["filters"]["sensitive_data_filter"]["()"])()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(formatter)
+        handler.addFilter(redaction_filter)
+        log = logging.getLogger(f"test.logging.config.{uuid.uuid4().hex}")
+        log.handlers = [handler]
+        log.setLevel(logging.INFO)
+        log.propagate = False
+        log.info(
+            "Authorization: Bearer super-secret-token sessionid=abcdef",
+            extra={
+                "event": "health_test",
+                "job_id": "job-77",
+                "password": "hunter2",
+                "owner_token": "lock-token",
+                "otp_code": "123456",
+            },
+        )
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(payload["event"], "health_test")
+        self.assertEqual(payload["job_id"], "job-77")
+        rendered = stream.getvalue()
+        self.assertNotIn("hunter2", rendered)
+        self.assertNotIn("lock-token", rendered)
+        self.assertNotIn("123456", rendered)
+        self.assertNotIn("super-secret-token", rendered)
+        self.assertNotIn("abcdef", rendered)
+        self.assertIn("[REDACTED]", rendered)
 

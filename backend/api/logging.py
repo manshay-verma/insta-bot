@@ -116,11 +116,15 @@ class StructuredJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         record.message = record.getMessage()
 
+        message = record.message
+        if isinstance(message, str):
+            message = redact_sensitive_data(message)
+
         payload: Dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.message,
+            "message": message,
             "event": getattr(record, "event", "log_entry"),
             "job_id": getattr(record, "job_id", None),
             "account_id": getattr(record, "account_id", None),
@@ -138,7 +142,7 @@ class StructuredJsonFormatter(logging.Formatter):
             payload["context"] = redact_sensitive_data(extra_ctx)
 
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = redact_sensitive_data(self.formatException(record.exc_info))
 
         return json.dumps(payload, default=str)
 

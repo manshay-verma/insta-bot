@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from celery import bootsteps
 from django.conf import settings
 from django.db import connection, transaction
 from django.utils import timezone
@@ -519,22 +518,4 @@ def reconcile_startup_jobs(
         "duration_ms": duration_ms,
         "action_counts": action_counts,
     }
-
-
-class StartupReconciliationStep(bootsteps.StartStopStep):
-    """
-    Celery consumer bootstep:
-    Runs startup reconciliation before the worker consumer starts consuming tasks.
-    """
-
-    requires = {"celery.worker.consumer.tasks:Tasks"}
-
-    def start(self, consumer):
-        logger.info("StartupReconciliationStep: Reconciling jobs before consuming tasks...")
-        try:
-            reconcile_startup_jobs(blocking=True)
-        except Exception as exc:
-            logger.error("StartupReconciliationStep failed during reconciliation: %s", exc, exc_info=True)
-            # Worker must fail closed or log critical error
-            raise
 

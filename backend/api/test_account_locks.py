@@ -13,6 +13,7 @@ from .account_locks import (
     AccountLockOwnershipError,
     ExecutionGenerationError,
     acquire_account_lock,
+    prepare_worker_loss_recovery,
     release_account_lock,
     renew_account_lock,
     resolve_execution_recovery,
@@ -432,6 +433,37 @@ class AccountBrowserLockTests(TestCase):
                 recovery_kind="worker_redelivery",
                 allocated_generation=1,
             ).exists()
+        )
+
+    def test_published_allocated_generation_starts_prepared_recovery(self):
+        self.job.status = AutomationJob.Status.RUNNING
+        self.job.save(update_fields=["status"])
+        prepared = prepare_worker_loss_recovery(job_id=self.job.id)
+        started = resolve_execution_recovery(
+            job_id=self.job.id,
+            source="worker_redelivery",
+            supplied_generation=prepared.execution_generation,
+            delivery_key=prepared.delivery_key,
+            runner_identity_confirmed=False,
+        )
+        with self.assertRaises(AccountLockOwnershipError):
+            resolve_execution_recovery(
+                job_id=self.job.id,
+                source="worker_redelivery",
+                supplied_generation=prepared.execution_generation,
+                delivery_key=prepared.delivery_key,
+                runner_identity_confirmed=False,
+            )
+        self.job.refresh_from_db()
+        self.assertEqual(prepared.action, "start_new_generation")
+        self.assertEqual(started.action, "start_prepared_generation")
+        self.assertEqual(started.execution_generation, 1)
+        self.assertEqual(self.job.execution_generation, 1)
+        self.assertEqual(self.job.attempt_count, 1)
+        self.assertEqual(self.job.status, AutomationJob.Status.RUNNING)
+        self.assertEqual(
+            ExecutionRecoveryRecord.objects.filter(job=self.job).count(),
+            1,
         )
 
     def test_unexpired_otp_never_allocates_replacement_generation(self):

@@ -24,10 +24,12 @@ from api.account_locks import (
 from api.models import AutomationJob
 from orchestrator.runner_ipc import (
     RunnerIdentity,
+    RunnerIdentityError,
     build_auth_response,
     create_auth_challenge,
     get_container_boot_id,
     get_process_start_ticks,
+    parse_proc_stat,
     validate_auth_response,
     validate_live_process,
 )
@@ -126,6 +128,82 @@ class RunnerIPCAuthenticationTests(SimpleTestCase):
         finally:
             os.killpg(os.getpgid(process.pid), 9)
             process.wait(timeout=5)
+
+
+class ProcessIdentityValidationTests(SimpleTestCase):
+    def _identity_for_pid(self, pid):
+        return RunnerIdentity(
+            runner_id="11111111-1111-1111-1111-111111111111",
+            pid=pid,
+            start_ticks=get_process_start_ticks(pid),
+            container_boot_id=get_container_boot_id(),
+            pgid=os.getpgid(pid),
+            execution_generation=1,
+            job_id="22222222-2222-2222-2222-222222222222",
+            profile_path="/tmp/profile",
+        )
+
+    def _stat_prefix(self, state):
+        fields = " ".join(["1", "1", "1", "0", "-1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1", "0", "100"])
+        return f"10 (test proc) {state} {fields}"
+
+    def test_live_process_matches_identity(self):
+        process = subprocess.Popen(["python", "-c", "import time; time.sleep(30)"], start_new_session=True)
+        try:
+            identity = self._identity_for_pid(process.pid)
+            self.assertTrue(validate_live_process(identity))
+        finally:
+            os.killpg(os.getpgid(process.pid), 9)
+            process.wait(timeout=5)
+
+    def test_zombie_process_is_not_live(self):
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        try:
+            deadline = time.monotonic() + 2
+            state = ""
+            while time.monotonic() < deadline:
+                state, _ticks = parse_proc_stat(Path(f"/proc/{pid}/stat").read_text(encoding="ascii"))
+                if state == "Z":
+                    break
+                time.sleep(0.01)
+            self.assertEqual(state, "Z")
+            identity = self._identity_for_pid(pid)
+            self.assertFalse(validate_live_process(identity))
+        finally:
+            os.waitpid(pid, 0)
+
+    def test_dead_and_missing_process_are_not_live(self):
+        process = subprocess.Popen(["python", "-c", "import time; time.sleep(30)"], start_new_session=True)
+        identity = self._identity_for_pid(process.pid)
+        os.killpg(identity.pgid, 9)
+        process.wait(timeout=5)
+        self.assertFalse(validate_live_process(identity))
+        missing = RunnerIdentity(**{**identity.as_dict(), "pid": 2**22, "pgid": 2**22})
+        self.assertFalse(validate_live_process(missing))
+
+    def test_start_tick_mismatch_rejects_pid_reuse(self):
+        identity = self._identity_for_pid(os.getpid())
+        reused = RunnerIdentity(**{**identity.as_dict(), "start_ticks": identity.start_ticks + 1})
+        self.assertFalse(validate_live_process(reused))
+
+    def test_malformed_or_unreadable_proc_is_not_live(self):
+        identity = self._identity_for_pid(os.getpid())
+        state, ticks = parse_proc_stat(self._stat_prefix("R"))
+        self.assertEqual((state, ticks), ("R", 100))
+        with self.assertRaises(RunnerIdentityError):
+            parse_proc_stat("not a proc stat")
+        with self.assertRaises(RunnerIdentityError):
+            parse_proc_stat("1 (truncated)")
+        with mock.patch("orchestrator.runner_ipc._read_proc_stat", return_value=("Z", identity.start_ticks)):
+            self.assertFalse(validate_live_process(identity))
+        with mock.patch("orchestrator.runner_ipc._read_proc_stat", return_value=("X", identity.start_ticks)):
+            self.assertFalse(validate_live_process(identity))
+        with mock.patch("orchestrator.runner_ipc._read_proc_stat", side_effect=PermissionError("denied")):
+            self.assertFalse(validate_live_process(identity))
+        with mock.patch("orchestrator.runner_ipc._read_proc_stat", side_effect=RunnerIdentityError("malformed")):
+            self.assertFalse(validate_live_process(identity))
 
 
 class BrowserRunnerLinuxIntegrationTests(SimpleTestCase):

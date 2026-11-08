@@ -68,87 +68,187 @@ def check_redis_health() -> Dict[str, Any]:
 # Celery worker health
 # ---------------------------------------------------------------------------
 
-def _get_redis_queue_depth() -> Optional[int]:
+def _broker_url() -> str:
+    from django.conf import settings
+    return getattr(settings, "CELERY_BROKER_URL", "redis://redis:6379/0")
+
+
+def _default_queue_name() -> str:
+    from django.conf import settings
+    return getattr(settings, "CELERY_TASK_DEFAULT_QUEUE", None) or "celery"
+
+
+def _redis_client():
+    import redis as redis_module
+    return redis_module.from_url(
+        _broker_url(),
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
+
+
+def _redis_broker_keys() -> Optional[Dict[str, Any]]:
     """
-    Returns the informational queue depth from Redis for the default 'celery' queue.
-    Not proof of task execution state — informational only.
+    Key names for the configured Redis transport.
+
+    Queue length is only the default queue, including Kombu priority lists.
+    Unacknowledged deliveries live in the transport hash, not in queue length.
     """
-    try:
-        import redis as redis_module
-        from django.conf import settings
-        client = redis_module.from_url(
-            getattr(settings, "CELERY_BROKER_URL", "redis://redis:6379/0"),
-            socket_connect_timeout=2,
-            socket_timeout=2,
-        )
-        return client.llen("celery")
-    except Exception:
+    if not _broker_url().startswith(("redis://", "rediss://")):
         return None
+    try:
+        from kombu.transport.redis import PRIORITY_STEPS, Channel
+    except ImportError:
+        return None
+    queue_name = _default_queue_name()
+    queue_keys = []
+    for priority in PRIORITY_STEPS:
+        if priority:
+            queue_keys.append(f"{queue_name}{Channel.sep}{priority}")
+        else:
+            queue_keys.append(queue_name)
+    return {
+        "queue": queue_name,
+        "queue_keys": queue_keys,
+        "unacked_key": Channel.unacked_key,
+    }
+
+
+def _count_list_keys(client, keys: List[str]) -> Optional[int]:
+    total = 0
+    for key in keys:
+        if not client.exists(key):
+            continue
+        key_type = client.type(key)
+        if isinstance(key_type, bytes):
+            key_type = key_type.decode("utf-8")
+        if key_type != "list":
+            return None
+        total += int(client.llen(key))
+    return total
+
+
+def _count_hash_key(client, key: str) -> Optional[int]:
+    if not client.exists(key):
+        return 0
+    key_type = client.type(key)
+    if isinstance(key_type, bytes):
+        key_type = key_type.decode("utf-8")
+    if key_type != "hash":
+        return None
+    return int(client.hlen(key))
+
+
+def measure_broker_task_counts() -> Dict[str, Any]:
+    """
+    Measure broker-queued and unacknowledged counts for the Redis transport.
+
+    These counts are not active, reserved, or scheduled tasks. None means the
+    count could not be measured. Zero means the transport reported no entries.
+    """
+    unknown = {
+        "broker_queue": _default_queue_name(),
+        "broker_queued": None,
+        "unacknowledged_tasks": None,
+    }
+    keys = _redis_broker_keys()
+    if keys is None:
+        return unknown
+    client = None
+    try:
+        client = _redis_client()
+        queued = _count_list_keys(client, keys["queue_keys"])
+        unacknowledged = _count_hash_key(client, keys["unacked_key"])
+        return {
+            "broker_queue": keys["queue"],
+            "broker_queued": queued,
+            "unacknowledged_tasks": unacknowledged,
+        }
+    except Exception as exc:
+        logger.warning("Broker task counts could not be measured: %s", exc)
+        return unknown
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def _inspect_task_count(payload: Any) -> Optional[int]:
+    """Return a count only when every worker reported a list. None is unknown."""
+    if not isinstance(payload, dict):
+        return None
+    total = 0
+    for tasks in payload.values():
+        if not isinstance(tasks, list):
+            return None
+        total += len(tasks)
+    return total
 
 
 def check_celery_health() -> Dict[str, Any]:
     """
-    Returns worker availability, active/reserved task counts via Celery inspect.
-    Uses inspect(timeout=2.0) with None-safe fallback.
+    Report worker visibility and task states separately.
 
-    Status:
-      - "healthy": ping succeeded
-      - "degraded": ping returned None (no workers responded) or partial info
-      - "unavailable": inspect raised an exception
-
-    IMPORTANT: Does not use Redis queue length alone as proof a task is or is not
-    executing. Active and reserved counts come from Celery inspect if available.
+    Celery inspect supplies active, reserved, and scheduled counts only when a
+    worker replies. None means that state was not observed; it is not zero.
+    broker_queued is only the default Redis queue, including Kombu priority
+    lists. unacknowledged_tasks is the Redis transport's unacked hash.
+    Redis queue length is not the set of executing tasks, and a boolean task
+    presence check is not task-state visibility.
     """
+    broker = measure_broker_task_counts()
+    task_states = {
+        "active_tasks": None,
+        "reserved_tasks": None,
+        "scheduled_tasks": None,
+        "broker_queued": broker["broker_queued"],
+        "unacknowledged_tasks": broker["unacknowledged_tasks"],
+        "queue_depth": broker["broker_queued"],
+        "broker_queue": broker["broker_queue"],
+    }
     try:
         from config.celery import app as celery_app
         inspect = celery_app.control.inspect(timeout=2.0)
-
         ping_result = inspect.ping()
-        if ping_result is None:
-            # No workers responded — degraded (not unavailable, worker may be starting)
-            queue_depth = _get_redis_queue_depth()
+        if not isinstance(ping_result, dict) or not ping_result:
             return {
                 "status": "degraded",
                 "reason": "No Celery workers responded to ping",
                 "workers": [],
-                "queue_depth": queue_depth,  # informational only
-                "active_tasks": None,
-                "reserved_tasks": None,
+                "worker_count": 0,
+                **task_states,
             }
 
         workers = list(ping_result.keys())
-
-        # Gather active and reserved task counts — None-safe
-        active = inspect.active()
-        reserved = inspect.reserved()
-
-        active_count = (
-            sum(len(v) for v in active.values()) if active else 0
+        active_tasks = _inspect_task_count(inspect.active())
+        reserved_tasks = _inspect_task_count(inspect.reserved())
+        scheduled_tasks = _inspect_task_count(inspect.scheduled())
+        partial = any(
+            count is None for count in (active_tasks, reserved_tasks, scheduled_tasks)
         )
-        reserved_count = (
-            sum(len(v) for v in reserved.values()) if reserved else 0
-        )
-
-        queue_depth = _get_redis_queue_depth()
-
         return {
-            "status": "healthy",
+            "status": "degraded" if partial else "healthy",
+            "reason": "Celery inspect returned a partial task snapshot" if partial else "",
             "workers": workers,
             "worker_count": len(workers),
-            "queue_depth": queue_depth,  # informational only
-            "active_tasks": active_count,
-            "reserved_tasks": reserved_count,
+            "active_tasks": active_tasks,
+            "reserved_tasks": reserved_tasks,
+            "scheduled_tasks": scheduled_tasks,
+            "broker_queued": broker["broker_queued"],
+            "unacknowledged_tasks": broker["unacknowledged_tasks"],
+            "queue_depth": broker["broker_queued"],
+            "broker_queue": broker["broker_queue"],
         }
-
     except Exception as exc:
         logger.warning("Celery health check failed: %s", exc)
         return {
             "status": "unavailable",
             "error": str(exc),
             "workers": [],
-            "queue_depth": None,
-            "active_tasks": None,
-            "reserved_tasks": None,
+            "worker_count": None,
+            **task_states,
         }
 
 
@@ -156,62 +256,103 @@ def check_celery_health() -> Dict[str, Any]:
 # Browser runner health
 # ---------------------------------------------------------------------------
 
-def get_active_runner_health() -> Dict[str, Any]:
+STALE_RUNNER_HEARTBEAT_SECONDS = 600
+
+
+def _load_runner_process_validator():
     """
-    Returns health status for all jobs with an active browser runner (RUNNING or AWAITING_OTP
-    with runner_pid set).
+    Load the existing runner identity check.
 
-    Uses validate_live_process from orchestrator.runner_ipc.
-    Health check failures do NOT trigger recovery.
-
-    Runner status values:
-      - "live": process exists and matches identity
-      - "dead": process gone or identity mismatch
-      - "stale": heartbeat too old (> 10 minutes without update)
+    The backend image does not contain orchestrator and does not share the
+    worker process namespace. A failed import means process health is unknown
+    here; it must not be reinterpreted as a dead process.
     """
-    # Deferred import to avoid AppRegistryNotReady at module level
-    from .models import AutomationJob
-
-    STALE_THRESHOLD_SECONDS = 600  # 10 minutes
-
     try:
         from orchestrator.runner_ipc import RunnerIdentity, validate_live_process
     except ImportError as exc:
-        logger.warning("Cannot import runner_ipc for health check: %s", exc)
-        return {"status": "unavailable", "error": str(exc), "runners": []}
+        logger.warning("Runner process identity validation is unavailable: %s", exc)
+        return None, None
+    return RunnerIdentity, validate_live_process
 
+
+def _runner_identity_complete(job) -> bool:
+    return all(
+        (
+            job.runner_pid is not None,
+            job.runner_start_ticks is not None,
+            job.runner_pgid is not None,
+            job.runner_container_boot_id,
+            job.runner_profile_path,
+            job.runner_id,
+        )
+    )
+
+
+def _runner_component_status(runners: List[Dict[str, Any]]) -> str:
+    statuses = {runner["runner_status"] for runner in runners}
+    if "unknown" in statuses:
+        return "unavailable"
+    if "dead" in statuses or "stale" in statuses:
+        return "degraded"
+    return "healthy"
+
+
+def get_active_runner_health() -> Dict[str, Any]:
+    """
+    Report runner health from authoritative PostgreSQL rows.
+
+    Process liveness is reported only when the existing runner identity
+    validator can run in this process. Otherwise a recorded runner is unknown,
+    except a stale heartbeat, which is visible from PostgreSQL alone.
+    Health checks do not terminate processes or change job state.
+    """
+    from .models import AutomationJob
+
+    counts = {
+        "runner_count": None,
+        "live_count": None,
+        "stale_count": None,
+        "dead_count": None,
+        "unknown_count": None,
+    }
+    try:
+        active_jobs = list(
+            AutomationJob.objects.filter(
+                status__in=[
+                    AutomationJob.Status.RUNNING,
+                    AutomationJob.Status.AWAITING_OTP,
+                ],
+                runner_pid__isnull=False,
+            )
+        )
+    except Exception as exc:
+        logger.warning("Runner health: DB query failed: %s", exc)
+        return {
+            "status": "unavailable",
+            "error": str(exc),
+            "process_inspection": "unavailable",
+            "runners": [],
+            **counts,
+        }
+
+    runner_identity, validate_live_process = _load_runner_process_validator()
+    process_inspection = "available" if validate_live_process is not None else "unavailable"
     now = timezone.now()
     runners = []
 
-    try:
-        active_jobs = AutomationJob.objects.filter(
-            status__in=[
-                AutomationJob.Status.RUNNING,
-                AutomationJob.Status.AWAITING_OTP,
-            ],
-            runner_pid__isnull=False,
-        ).select_related()
-    except Exception as exc:
-        logger.warning("Runner health: DB query failed: %s", exc)
-        return {"status": "unavailable", "error": str(exc), "runners": []}
-
     for job in active_jobs:
-        runner_status = "dead"
         heartbeat_age = None
-
         if job.runner_heartbeat_at:
             heartbeat_age = (now - job.runner_heartbeat_at).total_seconds()
+        heartbeat_stale = (
+            heartbeat_age is not None and heartbeat_age > STALE_RUNNER_HEARTBEAT_SECONDS
+        )
+        runner_status = "unknown"
+        process_verified = False
 
-        if (
-            job.runner_pid is not None
-            and job.runner_start_ticks is not None
-            and job.runner_pgid is not None
-            and job.runner_container_boot_id
-            and job.runner_profile_path
-            and job.runner_id
-        ):
+        if validate_live_process is not None and _runner_identity_complete(job):
             try:
-                identity = RunnerIdentity(
+                identity = runner_identity(
                     runner_id=str(job.runner_id),
                     pid=job.runner_pid,
                     start_ticks=job.runner_start_ticks,
@@ -222,17 +363,16 @@ def get_active_runner_health() -> Dict[str, Any]:
                     profile_path=job.runner_profile_path,
                 )
                 if validate_live_process(identity):
-                    if heartbeat_age is not None and heartbeat_age > STALE_THRESHOLD_SECONDS:
-                        runner_status = "stale"
-                    else:
-                        runner_status = "live"
+                    runner_status = "stale" if heartbeat_stale else "live"
+                    process_verified = True
                 else:
                     runner_status = "dead"
+                    process_verified = True
             except Exception as exc:
-                logger.warning(
-                    "Runner health check failed for job %s: %s", job.id, exc
-                )
-                runner_status = "dead"
+                logger.warning("Runner health check failed for job %s: %s", job.id, exc)
+                runner_status = "unknown"
+        elif heartbeat_stale:
+            runner_status = "stale"
 
         runners.append({
             "job_id": str(job.id),
@@ -242,19 +382,19 @@ def get_active_runner_health() -> Dict[str, Any]:
             "runner_pid": job.runner_pid,
             "job_status": job.status,
             "runner_status": runner_status,
+            "process_verified": process_verified,
             "last_heartbeat": job.runner_heartbeat_at.isoformat() if job.runner_heartbeat_at else None,
             "heartbeat_age_seconds": int(heartbeat_age) if heartbeat_age is not None else None,
         })
 
-    stale_count = sum(1 for r in runners if r["runner_status"] == "stale")
-    dead_count = sum(1 for r in runners if r["runner_status"] == "dead")
-
     return {
-        "status": "healthy" if dead_count == 0 and stale_count == 0 else "degraded",
+        "status": _runner_component_status(runners),
+        "process_inspection": process_inspection,
         "runner_count": len(runners),
-        "live_count": sum(1 for r in runners if r["runner_status"] == "live"),
-        "stale_count": stale_count,
-        "dead_count": dead_count,
+        "live_count": sum(1 for runner in runners if runner["runner_status"] == "live"),
+        "stale_count": sum(1 for runner in runners if runner["runner_status"] == "stale"),
+        "dead_count": sum(1 for runner in runners if runner["runner_status"] == "dead"),
+        "unknown_count": sum(1 for runner in runners if runner["runner_status"] == "unknown"),
         "runners": runners,
     }
 
@@ -263,42 +403,50 @@ def get_active_runner_health() -> Dict[str, Any]:
 # Overall health aggregate
 # ---------------------------------------------------------------------------
 
+REQUIRED_HEALTH_COMPONENTS = ("database", "redis", "celery", "runners")
+
+
+def aggregate_component_status(components: Dict[str, Any]) -> str:
+    """
+    Combine required component statuses.
+
+    Missing component results are unavailable, not healthy and not zero.
+    Database or Redis unavailable makes the service unavailable.
+    Any other required component that is not healthy makes the result degraded.
+    """
+    for name in REQUIRED_HEALTH_COMPONENTS:
+        component = components.get(name)
+        if not isinstance(component, dict) or "status" not in component:
+            return "unavailable"
+
+    database_status = components["database"]["status"]
+    redis_status = components["redis"]["status"]
+    if database_status == "unavailable" or redis_status == "unavailable":
+        return "unavailable"
+    if database_status != "healthy" or redis_status != "healthy":
+        return "degraded"
+
+    for name in REQUIRED_HEALTH_COMPONENTS:
+        if components[name]["status"] != "healthy":
+            return "degraded"
+    return "healthy"
+
+
 def get_overall_health() -> Dict[str, Any]:
     """
     Aggregate component health check.
 
-    Status rules:
-      - "healthy":   DB healthy, Redis healthy, Celery not unavailable, no dead/stale runners
-      - "degraded":  Celery degraded, or any stale/dead runner, but DB + Redis healthy
-      - "unavailable": DB or Redis unavailable
-
     Health check failures MUST NOT trigger recovery actions.
     """
-    db = check_database_health()
-    redis_h = check_redis_health()
-    celery_h = check_celery_health()
-    runner_h = get_active_runner_health()
-
-    db_ok = db["status"] == "healthy"
-    redis_ok = redis_h["status"] == "healthy"
-    celery_ok = celery_h["status"] in {"healthy", "degraded"}  # degraded ≠ broken
-    runner_ok = runner_h.get("dead_count", 0) == 0 and runner_h.get("stale_count", 0) == 0
-
-    if not db_ok or not redis_ok:
-        overall = "unavailable"
-    elif not celery_ok or not runner_ok:
-        overall = "degraded"
-    else:
-        overall = "healthy"
-
+    components = {
+        "database": check_database_health(),
+        "redis": check_redis_health(),
+        "celery": check_celery_health(),
+        "runners": get_active_runner_health(),
+    }
     return {
-        "status": overall,
+        "status": aggregate_component_status(components),
         "checked_at": timezone.now().isoformat(),
-        "components": {
-            "database": db,
-            "redis": redis_h,
-            "celery": celery_h,
-            "runners": runner_h,
-        },
+        "components": components,
     }
 

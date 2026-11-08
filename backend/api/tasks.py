@@ -329,7 +329,7 @@ def execute_automation_job(
             )
             return {"job_id": str(job.id), "status": AutomationJob.Status.FAILED}
 
-        from orchestrator import AdapterType, TaskType, UnifiedWorker
+        from orchestrator import AdapterType, TaskType
 
         action_map = {
             "like": TaskType.LIKE_POSTS,

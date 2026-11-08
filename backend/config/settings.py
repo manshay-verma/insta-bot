@@ -226,9 +226,13 @@ LOGGING = {
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'standard',
+            'formatter': 'structured',
             'filters': ['sensitive_data_filter'],
         },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
     },
     'loggers': {
         'api': {

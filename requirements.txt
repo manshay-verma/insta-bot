@@ -1,6 +1,5 @@
 # Web Scraping
 requests==2.31.0
-beautifulsoup4==4.12.2
 lxml==4.9.3
 scrapy==2.11.0
 w3lib==2.1.2

@@ -131,7 +131,25 @@ def resolve_execution_recovery(
     if source == "worker_redelivery":
         if supplied_generation is not None:
             supplied_generation = normalize_execution_generation(supplied_generation)
-            failed_generation = supplied_generation
+            # Reconciliation publishes the allocated generation. A prepared
+            # record is keyed by the failed generation, so map the published
+            # generation back before rebuilding its delivery key.
+            prepared_record = (
+                ExecutionRecoveryRecord.objects.filter(
+                    job_id=job.id,
+                    allocated_generation=supplied_generation,
+                    recovery_kind="worker_redelivery",
+                )
+                .order_by("created_at")
+                .first()
+            )
+            if (
+                prepared_record is not None
+                and prepared_record.failed_generation != supplied_generation
+            ):
+                failed_generation = prepared_record.failed_generation
+            else:
+                failed_generation = supplied_generation
         else:
             failed_generation = job.execution_generation
         delivery_key = build_worker_recovery_delivery_key(

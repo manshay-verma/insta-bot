@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -15,7 +16,48 @@ from .runner_ipc import (
 )
 
 
+def _record_fake_browser(event: str, payload: dict) -> None:
+    path = Path(os.environ.get("INSTABOT_FAKE_BROWSER_LOG", "/tmp/d16-fake-browser.jsonl"))
+    record = {
+        "event": event,
+        "job_id": str(payload.get("job_id")),
+        "execution_generation": int(payload.get("execution_generation")),
+        "mode": "fake_browser",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+async def _execute_fake_browser(payload: dict) -> dict:
+    """Deterministic stand-in for a browser operation. It never contacts Instagram."""
+    _record_fake_browser("entered", payload)
+    hold_path = os.environ.get("INSTABOT_FAKE_BROWSER_HOLD", "")
+    if hold_path:
+        command_path = Path(hold_path)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if not runner_process_state["browser_actions_enabled"]:
+                raise RuntimeError("Fake browser lost supervisor ownership.")
+            command = command_path.read_text(encoding="utf-8").strip() if command_path.exists() else "release"
+            if command == "release":
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise TimeoutError("Fake browser hold expired.")
+    _record_fake_browser("completed", payload)
+    return {
+        "success": True,
+        "items_processed": 1,
+        "errors": [],
+        "data": {"mode": "fake_browser"},
+    }
+
+
 async def _execute_payload(payload: dict) -> dict:
+    if os.environ.get("INSTABOT_FAKE_BROWSER") == "1":
+        return await _execute_fake_browser(payload)
+
     project_root = Path(__file__).resolve().parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))

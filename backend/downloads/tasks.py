@@ -1,15 +1,19 @@
 import os
-import boto3
 from celery import shared_task
 from django.conf import settings
 from .models import Download
 
-@shared_task(bind=True)
+@shared_task(bind=True, name="downloads.tasks.upload_media_to_s3")
 def upload_media_to_s3(self, download_id, local_file_path, s3_key=None):
     """
     Background worker that offloads large media files to AWS S3,
     protecting the backend's main thread.
+
+    boto3 is imported here so the API process can autodiscover this task
+    without installing the worker-only dependency.
     """
+    import boto3
+
     try:
         download = Download.objects.get(id=download_id)
         download.status = 'uploading'
